@@ -1,0 +1,34 @@
+{
+  "//": "dsh-screenshot-classify 配置示例。复制到 %USERPROFILE%\\.dsh-screenshot-classify\\config.json 并按需改。也可以用设置页改（推荐）。OCR 默认走宿主自带的多模态模型（mode \"host\"，不需要任何 key）；\"qwen\" 走通义千问 API，需要 apiKey 或 DASHSCOPE_API_KEY 环境变量。",
+  "enabled": true,
+  "vaultPath": "D:\\path\\to\\obsidian-vault",
+  "inboxFolder": "收件箱",
+  "attachmentsFolder": "attachments",
+  "knowledgeFolder": "知识库",
+  "summaryFolder": "总结",
+  "archiveFolder": "归档",
+  "recycleFolder": "回收站",
+  "ocr": {
+    "mode": "host",
+    "hostModel": "",
+    "model": "qwen-vl-plus",
+    "apiKey": "",
+    "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+  },
+  "classify": {
+    "//": "按内容自动分类。纯本地规则，免费。关掉就退回原插件的行为（只打 #文档/#图片）。",
+    "enabled": true,
+    "minConfidence": 0.55
+  },
+  "summarize": {
+    "//": "存文档（#文档）时按 OCR 内容写一句摘要。off=不写；rules=本地抽取式，免费但质量一般；host=交给宿主文本模型写一句人话。",
+    "mode": "rules",
+    "hostModel": "",
+    "maxChars": 120
+  },
+  "pollIntervalMs": 200,
+  "cooldownMs": 2000,
+  "dupWindowMs": 6000,
+  "dialog": { "offsetX": 16, "offsetY": 16, "previewMaxWidth": 320 },
+  "organize": { "addBacklinks": true }
+}

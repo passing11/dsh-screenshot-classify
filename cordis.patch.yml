@@ -1,0 +1,10 @@
+# dsh-screenshot-classify bundle patch layer.
+# 安装本包到 profile 后,host 端加载主入口(剪贴板监听/悬浮窗/OCR/自动分类/摘要/存储/整理工具)。
+#
+# id 必须与 index.mjs 的 SETTINGS_NS 一致 —— 设置服务按条目 id 投影 Config。
+# 这里用新 id 而不是沿用原插件的 `dsh-screenshot-capture`:两个插件都会注册
+# 一份 Config schema,同一个 id 会互相覆盖。用户的既有配置由 index.mjs 的
+# LEGACY_SETTINGS_NS 兜底读取,不需要在这里复制。
+- insert:
+    - id: dsh-screenshot-classify
+      name: dsh-screenshot-classify

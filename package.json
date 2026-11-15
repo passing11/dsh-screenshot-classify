@@ -1,0 +1,103 @@
+{
+  "name": "dsh-screenshot-classify",
+  "version": "0.3.1",
+  "description": "Screenshot capture with automatic content classification for DeepSeek Harness: clipboard watcher + system floating window (comment / key-point / category picker) + zero-config OCR through the host's own multimodal model + automatic #category tagging + one-line summary for saved documents + Obsidian per-day merging + evening AI organization. 截图即存 · 自动分类:剪贴板监听 + 鼠标位置悬浮窗 + 用宿主大模型零配置识别 + 按内容自动打 #类目 标签 + 存文档时自动写一句摘要 + Obsidian 按天合并 + 晚间整理",
+  "type": "module",
+  "main": "index.mjs",
+  "author": "passing11",
+  "exports": {
+    ".": "./index.mjs",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "client.js",
+    "core.mjs",
+    "config.mjs",
+    "clipboard.mjs",
+    "storage.mjs",
+    "ocr.mjs",
+    "organize.mjs",
+    "classify.mjs",
+    "summarize.mjs",
+    "categories.mjs",
+    "scripts/",
+    "cordis.patch.yml",
+    "config.example.json",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "dev": "node dev-run.mjs",
+    "dev:auto": "node dev-run.mjs --auto doc",
+    "test": "node test/test-format.mjs && node test/test-storage.mjs && node test/test-reasoning.mjs && node test/test-autoclose.mjs && node test/test-config-shape.mjs && node test/test-single-instance.mjs && node test/test-settings-reload.mjs && node test/test-classify.mjs && node test/test-summarize.mjs",
+    "test:ocr": "node test/test-ocr.mjs",
+    "test:classify": "node test/test-classify.mjs",
+    "test:summarize": "node test/test-summarize.mjs",
+    "test:window": "powershell -NoProfile -ExecutionPolicy Bypass -File test/test-autoclose-dialog.ps1",
+    "test:window:hover": "powershell -NoProfile -ExecutionPolicy Bypass -File test/test-autoclose-hover.ps1",
+    "test:window:layout": "powershell -NoProfile -ExecutionPolicy Bypass -File test/test-dialog-layout.ps1",
+    "test:window:layout:calc": "powershell -NoProfile -ExecutionPolicy Bypass -File test/test-dialog-layout-calc.ps1",
+    "test:window:zoom:calc": "powershell -NoProfile -ExecutionPolicy Bypass -File test/test-dialog-zoom-calc.ps1",
+    "test:window:zoom:paint": "powershell -NoProfile -ExecutionPolicy Bypass -File test/test-zoom-paint.ps1",
+    "test:window:resize": "powershell -NoProfile -ExecutionPolicy Bypass -File test/test-dialog-resize.ps1",
+    "test:window:resize:live": "powershell -NoProfile -ExecutionPolicy Bypass -File test/test-live-resize.ps1",
+    "test:window:remember": "powershell -NoProfile -ExecutionPolicy Bypass -File test/test-dialog-remember.ps1",
+    "test:window:keys": "powershell -NoProfile -ExecutionPolicy Bypass -STA -File test/test-dialog-keys.ps1",
+    "test:window:refresh": "powershell -NoProfile -ExecutionPolicy Bypass -File test/test-dialog-refresh.ps1",
+    "test:window:fixed": "powershell -NoProfile -ExecutionPolicy Bypass -File test/test-dialog-fixed.ps1",
+    "test:window:live": "powershell -NoProfile -ExecutionPolicy Bypass -File test/test-live-fixed.ps1",
+    "test:window:category": "powershell -NoProfile -ExecutionPolicy Bypass -STA -File test/test-dialog-category.ps1"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/schemastery": ">=3.18.0 <4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "engines": {
+    "node": "^22.0.0 || >=24",
+    "dsh": ">=0.0.1-rc.1 <0.3.0-0"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "plugin",
+    "screenshot",
+    "screenshot-capture",
+    "clipboard",
+    "ocr",
+    "classification",
+    "categorize",
+    "multimodal",
+    "vlm",
+    "obsidian",
+    "windows",
+    "winforms",
+    "productivity",
+    "automation"
+  ],
+  "license": "MIT"
+}
