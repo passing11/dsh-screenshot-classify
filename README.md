@@ -91,7 +91,7 @@ dsh plugin --profile desktop add /path/to/dsh-screenshot-classify
 
 # 方式三：打包后再装
 npm pack
-dsh plugin --profile desktop add ./dsh-screenshot-classify-0.3.1.tgz
+dsh plugin --profile desktop add ./dsh-screenshot-classify-0.4.0.tgz
 ```
 
 装完**重启 DSH**（不是刷新页面），然后：
@@ -108,7 +108,7 @@ dsh plugin --profile desktop add ./dsh-screenshot-classify-0.3.1.tgz
 
 ## 配置项
 
-设置页分组：**模型** / **常规** / **OCR** / **分类** / **摘要** / **弹窗** / **归档**。
+设置页分组（自上而下）：**模型** / **常规** / **OCR** / **弹窗** / **分类** / **摘要**。
 
 | 键 | 默认 | 说明 |
 |---|---|---|
@@ -123,7 +123,7 @@ dsh plugin --profile desktop add ./dsh-screenshot-classify-0.3.1.tgz
 | `summaryFolder` | `总结` | 当日总结 |
 | `archiveFolder` | `归档` | 归档后的每日笔记 |
 | `ocrMode` | `host` | `host` / `off` |
-| `ocrHostModel` | `""` | 只在三个槽位全空时才有意义：留空自动挑声明了图片模态的模型 |
+| `ocrHostModel` | `""` | 三个槽位全空时才生效；留空则用宿主当前默认模型，再退回目录里第一个声明图片输入的 |
 | **`classifyEnabled`** | `true` | 自动分类总开关。关掉＝退回原插件行为 |
 | **`classifyMinConfidence`** | `0.55` | 低于它算「判不准」，加弱标记 |
 | **`summarizeMode`** | `rules` | `off` / `rules` / `host` |
@@ -132,10 +132,11 @@ dsh plugin --profile desktop add ./dsh-screenshot-classify-0.3.1.tgz
 | **`dialogTheme`** | `c1` | `c1` 青碧扫描 / `c2` 靛蓝取景 / `c3` 石墨取景 / `c4` 紫罗兰取景 |
 | `dialogPositionMode` | `cursor` | `cursor` / `fixed` / `remember` |
 | `dialogAutoCloseSec` | `0` | 0＝不自动关 |
-| `tagInFilename` / `moveMode` / `unknownCategory` | — | 归档相关，与原插件一致 |
+| `recycleFolder` | `回收站` | 库内预留的回收目录（初始化时一并建出来） |
+| `dupWindowMs` | `6000` | 同一屏去重窗口，毫秒；0＝关闭。不进设置页，改 `config.json` |
 
-配置文件也可手写：`%USERPROFILE%\.dsh-screenshot-classify\config.json`，
-字段见 [`config.example.json`](config.example.json)。
+配置文件也可手写：`%USERPROFILE%\.dsh-screenshot-capture\config.json`
+（沿用原插件的目录，所以那份设置不用重填），字段见 [`config.example.json`](config.example.json)。
 
 ---
 
@@ -312,23 +313,29 @@ screenshot_inbox_organize keep=["14:30","14:32"]   # 保留这两条
 不需要 DSH 也能跑（`node_modules` 里的 `@deepseek-ai/*` 只在装进 DSH 时才需要）：
 
 ```bash
-npm test                  # 9 个 JS 套件：format/storage/reasoning/autoclose/config-shape/
-                          #               single-instance/settings-reload/classify/summarize
+npm test                  # 11 个 JS 套件：format/storage/reasoning/autoclose/config-shape/
+                          #                single-instance/settings-reload/classify/summarize/
+                          #                model-chain/ocr-layout
 npm run test:window       # 悬浮窗自动关闭
 npm run test:window:layout# 悬浮窗布局（含类目下拉的位置断言）
 npm run test:window:keys  # 快捷键 1/2（14 项，反射调 ProcessCmdKey）
 npm run test:window:category  # 类目回传（12 项，真选中 + 真点按钮）
+npm run test:window:zoom:paint # 缩放绘制（15 项，含主题/信息条的最小依赖加载）
 npm run test:classify     # 分类规则（48 项）
 npm run test:summarize    # 摘要（46 项）
 ```
 
-PowerShell 套件共 11 个、**338 项断言**，跑法：
+每个 ps1 都有对应的 `test:window:*` 脚本，完整清单见 `package.json` 的 `scripts`。
+PowerShell 套件共 14 个、**353 项断言**（12 个可跑出断言的套件逐项计数），跑法：
 
 ```powershell
 Get-ChildItem test\test-*.ps1 | ForEach-Object {
   powershell -NoProfile -ExecutionPolicy Bypass -STA -File $_.FullName
 }
 ```
+
+> 其中 `test-live-fixed.ps1` / `test-live-resize.ps1` 依赖真实剪贴板：剪贴板被别的程序
+> 占着时它们打印 `SKIP` 后正常退出，不产生断言。要数完整数字，先把剪贴板空出来。
 
 > **这些测试会真的弹出窗口**。模拟指针优先挑一块非主屏，只有一块屏时才退回主屏 ——
 > 你正在用的那块屏不该被测试弹窗打断。测试期间窗口会短暂出现在副屏上，几秒后自己关掉。

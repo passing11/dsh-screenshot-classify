@@ -54,6 +54,18 @@
   于是 `host` 模式和 `maxChars` 在真实链路上**从不生效**。现在两处双读（扁平优先、
   嵌套兜底），设置页改的值才真的起作用。
 
+- **`test/test-zoom-paint.ps1` 缺主题/头部函数依赖**（0.3.x 起就有的测试取材缺陷，与
+  本版 OCR 改动无关，`scripts/clip-dialog.ps1` 一行未动）。该用例用 `Get-FnSource` 从
+  `clip-dialog.ps1` 里抠函数源码来跑，白名单只列了 8 个；而 `Show-CaptureDialog` 在
+  主题 + 信息条落地后新增了对 `Initialize-Skin` / `Draw-Header` / `Get-HeaderMeta` /
+  `New-FlatButton` / `Initialize-KeyForm` / `Initialize-TitleBar` 的调用，白名单没跟上，
+  于是基线跑出 `Initialize-Skin : The term 'Initialize-Skin' is not recognized as the
+  name of a cmdlet, function, script file, or operable program.` 并以 exit 1 结束。
+  修复只改测试：补齐 6 个函数（按依赖顺序）、`$config` 里显式写 `theme = 'c1'`，
+  并补回 UTF-8 BOM。改后该套件 15 项断言全部通过；14 个 ps1 套件逐个跑退出码均为 0，
+  其中 `test-live-fixed.ps1` / `test-live-resize.ps1` 依赖真实剪贴板，剪贴板被占用时
+  打印 `SKIP` 后退出（环境限制，不产生断言，也不算通过）。
+
 ### 移除
 
 - **通义千问整条 OCR 通道**（`ocrQwen()`、`mode: "qwen"` 分支、`DASHSCOPE_API_KEY`
