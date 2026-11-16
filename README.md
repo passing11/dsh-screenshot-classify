@@ -22,7 +22,7 @@ through the host's own multimodal model, **local rule-based classification** int
 
 | | dsh-screenshot-capture | dsh-screenshot-classify |
 |---|---|---|
-| 截图入库 / 悬浮窗 / OCR / 晚间整理 | ✅ | ✅ 原样保留 |
+| 采集 / 悬浮窗 / OCR / 晚间整理 | ✅ | ✅ 原样保留 |
 | 笔记标题 | `## 14:30 #文档` | `## 14:30 #文档 #学习资料` |
 | 判不准时 | — | 额外一行 `> 分类: 梗图表情包（弱）` |
 | 文档摘要 | — | `> 摘要: 一道一元一次方程题，要求解出 x。` |

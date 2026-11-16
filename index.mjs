@@ -656,7 +656,7 @@ export function apply(ctx, input = {}) {
   ctx.tools.register(textTool({
     name: "screenshot_status",
     description:
-      "查询「截图入库」插件的状态:监听是否开启、vault 路径、今天的已收条目数。",
+      "查询「截图分类」插件的状态:监听是否开启、vault 路径、今天的已收条目数。",
     parameters: {},
     async execute() {
       const today = todayString();
@@ -681,7 +681,7 @@ export function apply(ctx, input = {}) {
     async execute(args) {
       const date = args.date || todayString();
       const entries = listEntriesForDate(liveConfig, date);
-      if (entries.length === 0) return `${date} 收件箱为空(还没有截图入库)`;
+      if (entries.length === 0) return `${date} 收件箱为空(还没有截图)`;
       return entries
         .map((e, i) => {
           const lines = [`${i + 1}. [${e.time}] #${e.kind} ${e.imageRel ?? ""}`];
