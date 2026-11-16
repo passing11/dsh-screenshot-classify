@@ -62,6 +62,16 @@ Invoke-Expression (Get-FnSource $src 'Get-PointerPosition')
 Invoke-Expression (Get-FnSource $src 'Get-StatePath')
 Invoke-Expression (Get-FnSource $src 'Get-RememberedGeometry')
 Invoke-Expression (Get-FnSource $src 'Save-RememberedGeometry')
+# 皮肤化之后 Show-CaptureDialog 又多了这几个调用(主题配色、头部信息条、扁平按钮、
+# 键盘窗体、标题栏染色)。只抠 Show-CaptureDialog 而漏掉它们,弹窗一构造就报
+# "Initialize-Skin 不是 cmdlet" —— 白名单没跟上源码,不是被测代码有问题。
+# 顺序按依赖走:皮肤先定义,画头部和造按钮都吃它。
+Invoke-Expression (Get-FnSource $src 'Initialize-Skin')
+Invoke-Expression (Get-FnSource $src 'Draw-Header')
+Invoke-Expression (Get-FnSource $src 'Get-HeaderMeta')
+Invoke-Expression (Get-FnSource $src 'New-FlatButton')
+Invoke-Expression (Get-FnSource $src 'Initialize-KeyForm')
+Invoke-Expression (Get-FnSource $src 'Initialize-TitleBar')
 Invoke-Expression (Get-FnSource $src 'Show-CaptureDialog')
 Invoke-Expression (Get-FnSource $src 'Set-DialogImage')
 
@@ -128,6 +138,9 @@ $config = @{
   offsetX = 60; offsetY = 60
   previewMaxWidth = 360; width = 0; height = 0
   dupWindowMs = 6000; autoCloseSec = 0; statePath = ''
+  # 主题显式写死 c1:Initialize-Skin 拿到空串会**静默**退回 c1,断言照样过,
+  # 但那样"测的是哪套主题"就靠猜了。写死才能保证配色断言的前提是确定的。
+  theme = 'c1'
 }
 
 # 指针模拟到屏幕左上角,窗口摆它右下,互不干扰(同 test-dialog-layout.ps1)
