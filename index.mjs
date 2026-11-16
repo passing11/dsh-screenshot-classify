@@ -54,12 +54,14 @@ export const Config = z.object({
   vaultPath: vol(z.string().default(DEFAULT_CONFIG.vaultPath)),
   pollIntervalMs: vol(z.number().min(50).max(60000).default(DEFAULT_CONFIG.pollIntervalMs)),
   cooldownMs: vol(z.number().min(0).max(120000).default(DEFAULT_CONFIG.cooldownMs)),
-  ocrMode: vol(z.union([z.const("host"), z.const("qwen"), z.const("off")]).default(DEFAULT_CONFIG.ocr.mode)),
+  ocrMode: vol(z.union([z.const("host"), z.const("off")]).default(DEFAULT_CONFIG.ocr.mode)),
   ocrHostModel: vol(z.string().default(DEFAULT_CONFIG.ocr.hostModel)),
-  ocrModel: vol(z.string().default(DEFAULT_CONFIG.ocr.model)),
-  ocrApiKey: vol(z.string().default("")),
-  ocrEndpoint: vol(z.string().default(DEFAULT_CONFIG.ocr.endpoint)),
   ocrPrompt: vol(z.string().default(DEFAULT_CONFIG.ocr.prompt)),
+  // ---- 模型槽位(OCR 用) ----
+  // 值写 "provider/model" 或裸 model id;留空 = 该槽位不参与。
+  modelPrimary: vol(z.string().default(DEFAULT_CONFIG.model.primary)),
+  modelFallback1: vol(z.string().default(DEFAULT_CONFIG.model.fallback1)),
+  modelFallback2: vol(z.string().default(DEFAULT_CONFIG.model.fallback2)),
   dialogPositionMode: vol(z.union([z.const("cursor"), z.const("fixed"), z.const("remember")]).default(DEFAULT_CONFIG.dialog.positionMode)),
   dialogFixedX: vol(z.number().min(-20000).max(20000).default(DEFAULT_CONFIG.dialog.fixedX)),
   dialogFixedY: vol(z.number().min(-20000).max(20000).default(DEFAULT_CONFIG.dialog.fixedY)),
@@ -95,10 +97,10 @@ function toFlat(config) {
     cooldownMs: config.cooldownMs,
     ocrMode: config.ocr?.mode,
     ocrHostModel: config.ocr?.hostModel ?? "",
-    ocrModel: config.ocr?.model,
-    ocrApiKey: config.ocr?.apiKey ?? "",
-    ocrEndpoint: config.ocr?.endpoint,
     ocrPrompt: config.ocr?.prompt,
+    modelPrimary: config.model?.primary ?? "",
+    modelFallback1: config.model?.fallback1 ?? "",
+    modelFallback2: config.model?.fallback2 ?? "",
     dialogPositionMode: config.dialog?.positionMode,
     dialogFixedX: config.dialog?.fixedX,
     dialogFixedY: config.dialog?.fixedY,
@@ -187,6 +189,7 @@ export { dropDefaults, fromFlat, geometryKeyOf, mergeSettings };
 function fromFlat(flat) {
   const out = {};
   const ocr = {};
+  const model = {};
   const dialog = {};
   const classify = {};
   const summarize = {};
@@ -196,10 +199,10 @@ function fromFlat(flat) {
   if (has(flat, "cooldownMs")) out.cooldownMs = flat.cooldownMs;
   if (has(flat, "ocrMode")) ocr.mode = flat.ocrMode;
   if (has(flat, "ocrHostModel")) ocr.hostModel = flat.ocrHostModel ?? "";
-  if (has(flat, "ocrModel")) ocr.model = flat.ocrModel;
-  if (has(flat, "ocrApiKey")) ocr.apiKey = flat.ocrApiKey || "";
-  if (has(flat, "ocrEndpoint")) ocr.endpoint = flat.ocrEndpoint;
   if (has(flat, "ocrPrompt")) ocr.prompt = flat.ocrPrompt;
+  if (has(flat, "modelPrimary")) model.primary = flat.modelPrimary ?? "";
+  if (has(flat, "modelFallback1")) model.fallback1 = flat.modelFallback1 ?? "";
+  if (has(flat, "modelFallback2")) model.fallback2 = flat.modelFallback2 ?? "";
   if (has(flat, "dialogPositionMode")) dialog.positionMode = flat.dialogPositionMode;
   if (has(flat, "dialogFixedX")) dialog.fixedX = flat.dialogFixedX;
   if (has(flat, "dialogFixedY")) dialog.fixedY = flat.dialogFixedY;
@@ -216,6 +219,7 @@ function fromFlat(flat) {
   if (has(flat, "summarizeHostModel")) summarize.hostModel = flat.summarizeHostModel ?? "";
   if (has(flat, "summarizeMaxChars")) summarize.maxChars = flat.summarizeMaxChars;
   if (Object.keys(ocr).length > 0) out.ocr = ocr;
+  if (Object.keys(model).length > 0) out.model = model;
   if (Object.keys(dialog).length > 0) out.dialog = dialog;
   if (Object.keys(classify).length > 0) out.classify = classify;
   if (Object.keys(summarize).length > 0) out.summarize = summarize;
@@ -229,6 +233,7 @@ function mergeSettings(liveConfig, flat) {
     ...liveConfig,
     ...patch,
     ocr: patch.ocr ? { ...liveConfig.ocr, ...patch.ocr } : liveConfig.ocr,
+    model: patch.model ? { ...liveConfig.model, ...patch.model } : liveConfig.model,
     dialog: patch.dialog ? { ...liveConfig.dialog, ...patch.dialog } : liveConfig.dialog,
     classify: patch.classify ? { ...liveConfig.classify, ...patch.classify } : liveConfig.classify,
     summarize: patch.summarize ? { ...liveConfig.summarize, ...patch.summarize } : liveConfig.summarize,
@@ -295,7 +300,7 @@ export function apply(ctx, input = {}) {
   // ---- 宿主服务句柄(OCR 走宿主大模型用) ----
   // 用 getter 惰性取:服务可能比本插件晚注册,而且**不硬依赖** ——
   // 老版本 DSH / 精简 profile 里没有 llm 或 attachments 时,插件照常跑,
-  // 只是 OCR 回落千问,不会因为缺服务整个不激活。
+  // 只是没有可用的 OCR 候选,不会因为缺服务整个不激活。
   const host = {
     get llm() { return ctx.get("llm"); },
     get attachments() { return ctx.get("attachments"); },
@@ -493,6 +498,158 @@ export function apply(ctx, input = {}) {
     } catch (err) {
       ctx.logger.warn(`dsh-screenshot-classify: 读取设置失败,使用 JSON 配置:${err.message}`);
     }
+  });
+
+  // ---- 只读端点:模型目录 + 连通性探针(设置页用) ----
+  // 写法照 dsh-tes-config/index.mjs:686 —— ctx.inject 回调里直接用传进来的 webCtx
+  // 建 effect,回调返回值交给框架收。**不要在外面套 try/catch**:套了以后 effect
+  // 失败会被吞掉,插件照旧以 failed 收场,只是原因看不见。
+  // webServer 不进 export const inject,靠这里惰性注入 —— profile 没装 web 服务时
+  // 这段整块不执行,插件其余功能照常。
+  ctx.inject(["webServer"], (webCtx) => {
+    const json = (res, status, payload) => {
+      res.statusCode = status;
+      res.setHeader("content-type", "application/json; charset=utf-8");
+      res.setHeader("cache-control", "no-store");
+      res.end(JSON.stringify(payload));
+    };
+
+    /**
+     * 模型目录:provider → models[{ id, name, supportsImage, imageUnknown, efforts, defaultEffort }]。
+     *
+     * `supportsImage` 只认目录**明确声明**的 inputModalities。查不到元数据时
+     * `imageUnknown: true`、`supportsImage: false` —— 不谎称支持,但设置页仍允许选,
+     * 由用户在「图片能力未知」的提示下自己决定(拒选会把所有老适配器一起挡掉)。
+     */
+    const catalog = async () => {
+      try {
+        const llm = host.llm;
+        if (!llm || typeof llm.listProviders !== "function" || typeof llm.listModels !== "function") {
+          return { providers: [], error: "宿主没有 llm 服务" };
+        }
+        const providers = [];
+        for (const info of llm.listProviders() ?? []) {
+          try {
+            const models = [];
+            for (const m of (await llm.listModels(info.id)) ?? []) {
+              if (typeof m?.id !== "string") continue;
+              let meta = null;
+              if (typeof llm.resolveModelInfo === "function") {
+                try {
+                  meta = await llm.resolveModelInfo(info.id, m.id);
+                } catch {
+                  meta = null;
+                }
+              }
+              const declared = Array.isArray(meta?.inputModalities)
+                ? meta.inputModalities
+                : Array.isArray(m.inputModalities)
+                  ? m.inputModalities
+                  : null;
+              const entry = {
+                id: m.id,
+                name: typeof m.name === "string" && m.name ? m.name : m.id,
+                supportsImage: declared ? declared.includes("image") : false,
+                imageUnknown: !declared,
+                efforts: [],
+                defaultEffort: null,
+              };
+              const efforts = meta?.reasoning?.efforts;
+              if (Array.isArray(efforts)) {
+                entry.efforts = efforts
+                  .filter((e) => e && typeof e.id === "string")
+                  .map((e) => ({ id: e.id, name: typeof e.name === "string" && e.name ? e.name : e.id }));
+                if (typeof meta.reasoning.defaultEffort === "string") entry.defaultEffort = meta.reasoning.defaultEffort;
+              }
+              models.push(entry);
+            }
+            providers.push({
+              id: info.id,
+              name: typeof info.name === "string" && info.name ? info.name : info.id,
+              models,
+            });
+          } catch {
+            /* 单个 provider 失败不影响整份目录 */
+          }
+        }
+        return { providers };
+      } catch (err) {
+        // 服务异常不许变成 500:设置页拿这份数据是为了渲染选项,给了 error 就能降级
+        return { providers: [], error: String(err?.message ?? err) };
+      }
+    };
+
+    /**
+     * 连通性探针:一次点击 = 一次最小请求(maxTokens 8、不带图、不带 reasoningEffort、不重试)。
+     * 15s 上限;出错也回 200,由前端按 ok/error 显示。
+     */
+    const probe = async (provider, model) => {
+      if (!provider || !model) return { ok: false, ms: 0, error: "缺少 provider 或 model 参数" };
+      const llm = host.llm;
+      if (!llm || typeof llm.stream !== "function") return { ok: false, ms: 0, error: "宿主没有 llm 服务" };
+      const started = Date.now();
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 15000);
+      timer.unref?.();
+      try {
+        let finish;
+        for await (const chunk of llm.stream({
+          provider,
+          model,
+          messages: [{ role: "user", content: [{ type: "text", text: "在吗" }] }],
+          maxTokens: 8,
+          signal: ac.signal,
+        })) {
+          // 分片字段是 chunk.text —— 写成 chunk.delta 会永远读到 undefined
+          if (chunk?.type === "finish") {
+            finish = chunk.reason;
+            break;
+          }
+        }
+        const ms = Date.now() - started;
+        const kind = finish?.kind ?? "stop";
+        if (kind === "error" || kind === "aborted") {
+          return { ok: false, ms, error: String(finish?.failure?.message ?? finish?.failure?.code ?? kind) };
+        }
+        return { ok: true, ms };
+      } catch (err) {
+        return { ok: false, ms: Date.now() - started, error: String(err?.message ?? err) };
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    // 两条路由各自显式 register(不抽 helper):路径字面量与 kind:"exact" 同行,
+    // 静态检查能直接看出注册了几个端点。
+    const disposeModels = webCtx.effect(() => {
+      const dispose = webCtx.webServer.register({
+        kind: "exact",
+        path: "/plugins/dsh-screenshot-classify/models",
+        handler: async (req, res) => {
+          if (req.method !== "GET") return json(res, 405, { error: "method not allowed" });
+          json(res, 200, await catalog());
+        },
+      });
+      return () => dispose();
+    }, `[${name}] /plugins/dsh-screenshot-classify/models`);
+
+    const disposeProbe = webCtx.effect(() => {
+      const dispose = webCtx.webServer.register({
+        kind: "exact",
+        path: "/plugins/dsh-screenshot-classify/probe",
+        handler: async (req, res) => {
+          if (req.method !== "GET") return json(res, 405, { error: "method not allowed" });
+          const q = new URL(req.url ?? "", "http://localhost").searchParams;
+          json(res, 200, await probe((q.get("provider") ?? "").trim(), (q.get("model") ?? "").trim()));
+        },
+      });
+      return () => dispose();
+    }, `[${name}] /plugins/dsh-screenshot-classify/probe`);
+
+    return () => {
+      disposeModels();
+      disposeProbe();
+    };
   });
 
   // 工具

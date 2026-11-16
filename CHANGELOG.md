@@ -2,6 +2,67 @@
 
 本项目沿用 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的写法。
 
+## [0.4.0] - 2026-11-17
+
+把 OCR 的模型选择权交回用户，顺手修掉三处「配置写了但从来没生效」的暗坑。
+
+### 新增
+
+- **模型槽位 `modelPrimary` / `modelFallback1` / `modelFallback2`**。OCR 按
+  主模型 → 备选 1 → 备选 2 依次试，前一个成功就不再试后面的；前一个失败才继续。
+  值写 `provider/model` 或裸 model id（裸 id 用宿主默认 provider 补齐）。留空 = 该槽位
+  不参与；重复的路由保留先出现的。三个都留空时退回 0.3.x 的自动选路
+  （`ocrHostModel` → 宿主默认 → 目录里第一个声明 image 的），**升级后行为不变**。
+
+  整条链共享 180 秒预算、单条上限 120 秒；图片只 `saveImage` 一次，换候选不重传。
+  全失败时抛出的错误里逐条列出试过的路由与原因（`timeout` / `no-image-support` /
+  `empty-text` / `http-error`），不静默。
+
+- **设置页「模型」分组**（最上方）。三个按钮式选择器，按 provider 分组、首项「（不用）」。
+  没有声明图片输入的模型仍可选，只带「（无图片输入）」后缀；元数据查不到的带
+  「（图片能力未知）」。分组下方「测试主模型」只测 `modelPrimary`，发一次
+  `maxTokens: 8`、不带图的最小请求，结果显示在独立一行，不会被 4 秒即消的保存提示盖掉。
+
+- **两个只读端点**（宿主 `webServer` 服务注册；该服务不存在时整块不注册，其余功能不受影响）：
+  `GET /plugins/dsh-screenshot-classify/models`（模型目录）与
+  `GET /plugins/dsh-screenshot-classify/probe?provider=X&model=Y`（连通性探针）。
+  两者**恒回 HTTP 200**，服务异常 / 参数缺失写在响应体的 `error` 里，不制造 500；
+  唯一的例外是非 GET 请求回 405。
+
+- `test/test-model-chain.mjs`（8 组断言：顺序 / 去重 / 空槽跳过 / 失败切换且只传一次图 /
+  全失败报全量 / 三槽全空退回宿主路径 / `parseModelRef` / `reasonOf`）
+  与 `test/test-ocr-layout.mjs`（6 组断言：写入格式 / 回读拼回 / 幂等 / 分类摘要不误吃 /
+  老格式兼容 / 注释不被污染）。
+
+### 变更
+
+- **摘要跟随主模型槽位**：`summarize.hostModel` 留空时改用 `modelPrimary`，
+  主模型也空才用宿主默认。以前留空直接跳宿主默认，两条通道各选各的模型。
+- **笔记里的 OCR 改成多行块引用**：每行加 `> `、空行写裸 `>`，整段是 Obsidian 里
+  一个引用块。0.3.x 只写单行 `> OCR: …`，识别结果里的换行会让第二行起落到引用块外，
+  回读时还会被当成用户注释。`updateEntry` 现在整块替换（连旧续行一起换掉），
+  `parseEntries` 块读，老笔记的单行格式照旧读得懂。
+- `test/test-ocr.mjs` 改为冒烟脚本：没有宿主 llm 句柄时打印一行配置后跳过（exit 0），
+  不再依赖已删除的 `ocr.apiKey` 判断。
+
+### 修复
+
+- **`summarize.mjs` 读了一个 schema 里不存在的键** `config.summarizeModel`。
+  `host` 模式的首选模型从来没被这个键影响过，一直静默落到下一级。
+- **`summarizeMode` / `summarizeMaxChars` 是扁平读，而真实调用路径传进来的是嵌套配置**。
+  `core.mjs` 传的是 `liveConfig`，里面是 `summarize.mode` / `summarize.maxChars`，
+  于是 `host` 模式和 `maxChars` 在真实链路上**从不生效**。现在两处双读（扁平优先、
+  嵌套兜底），设置页改的值才真的起作用。
+
+### 移除
+
+- **通义千问整条 OCR 通道**（`ocrQwen()`、`mode: "qwen"` 分支、`DASHSCOPE_API_KEY`
+  回落路径）。删掉之后 OCR 只剩宿主 llm 一条路，缺服务时直接报错并说明缺什么，
+  不再悄悄换一个供应商。
+- **`ocr.model` / `ocr.apiKey` / `ocr.endpoint` 三个键作废**。老 `config.json` 里
+  留着它们不会报错、也不会被读取（`mergeDeep` 对未知键只做原样保留）；
+  设置页不再展示，schema 里也不再声明。
+
 ## [0.3.1] - 2026-11-15
 
 修一个只有在真机点一次下拉才看得见的 bug：弹窗里选的类目被静默丢弃。

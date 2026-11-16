@@ -121,6 +121,35 @@ function weakLine(category, weak) {
 }
 
 /**
+ * 多行 OCR → Obsidian 块引用。
+ *
+ * Obsidian 里连续以 `>` 开头的行是**同一个块引用**,所以多行文字必须逐行加 `> `,
+ * 空行写成裸 `>` —— 否则第二行起就是普通正文,既不在引用块里,也会被
+ * parseEntries 的注释过滤误当成用户注释。
+ *
+ * 首行固定是 `> OCR: …`(占位符 `> OCR: 识别中…` 也是这个形状,能被后续整段替换)。
+ */
+export function ocrBlockLines(text) {
+  const lines = String(text ?? "").split(/\r?\n/);
+  const out = [`> OCR: ${lines[0]}`];
+  for (const line of lines.slice(1)) out.push(line === "" ? ">" : `> ${line}`);
+  return out;
+}
+
+/**
+ * 是否 OCR 块的续行。
+ *
+ * `> 分类:` / `> 摘要:` / 新的 `> OCR:` 一律不算 —— 它们在笔记里是**并列的元数据行**,
+ * 不是上一行文字的延续;误吞掉它们就等于每次回填都把类目和摘要删了。
+ */
+function isOcrContinuation(line) {
+  if (line === ">") return true;
+  if (!line.startsWith("> ")) return false;
+  if (/^> (分类|摘要): /.test(line)) return false;
+  return !line.startsWith("> OCR: ");
+}
+
+/**
  * 向当天笔记追加一条记录。
  *
  * `ocrText === null` 是 **#文档 的占位** 语义:先把图和标题写进去(绝不让用户的
@@ -148,7 +177,8 @@ export function appendEntry(config, {
     "",
   ];
   if (kind === KIND.DOC) {
-    block.push(ocrText === null ? "> OCR: 识别中…" : `> OCR: ${ocrText || "（无文字）"}`);
+    // 多行 OCR 逐行加 `> `,空行写成裸 `>` —— 见 ocrBlockLines 的说明。
+    block.push(...ocrBlockLines(ocrText === null ? "识别中…" : (ocrText || "（无文字）")));
     const w = weakLine(category, weak);
     if (w) block.push(w);
     if (summary) block.push(`> 摘要: ${summary}`);
@@ -214,22 +244,22 @@ export function updateEntry(config, { date, time, imageRel, ocrText, category = 
   const kept = lines.filter((l) => !isMeta(l));
 
   const ocrIdx = kept.findIndex((l) => /^> OCR: /.test(l));
+  const extra = [];
+  const w = weakLine(category, weak);
+  if (w) extra.push(w);
+  if (summary) extra.push(`> 摘要: ${summary}`);
+
   if (ocrIdx >= 0) {
-    kept[ocrIdx] = `> OCR: ${ocrText || "（无文字）"}`;
-    const extra = [];
-    const w = weakLine(category, weak);
-    if (w) extra.push(w);
-    if (summary) extra.push(`> 摘要: ${summary}`);
-    kept.splice(ocrIdx + 1, 0, ...extra);
+    // 整个 OCR 块(首行 + 续行)一起换掉,否则旧的多行文字会残留在下面。
+    let end = ocrIdx + 1;
+    while (end < kept.length && isOcrContinuation(kept[end])) end += 1;
+    kept.splice(ocrIdx, end - ocrIdx, ...ocrBlockLines(ocrText || "（无文字）"), ...extra);
   } else {
     // 老笔记没有 OCR 行（或被人删了）:补一个,插在图片行后面
     const imgIdx = kept.findIndex((l) => l.startsWith("!["));
-    const extra = [`> OCR: ${ocrText || "（无文字）"}`];
-    const w = weakLine(category, weak);
-    if (w) extra.push(w);
-    if (summary) extra.push(`> 摘要: ${summary}`);
-    if (imgIdx >= 0) kept.splice(imgIdx + 1, 0, "", ...extra);
-    else kept.push(...extra);
+    const blockLines = [...ocrBlockLines(ocrText || "（无文字）"), ...extra];
+    if (imgIdx >= 0) kept.splice(imgIdx + 1, 0, "", ...blockLines);
+    else kept.push(...blockLines);
   }
 
   const newBlock = kept.join("\n");
@@ -262,25 +292,31 @@ export function parseEntries(noteText) {
     const tags = (tail.match(/#([^\s#]+)/g) || []).map((s) => s.slice(1));
     const body = chunk.slice(header[0].length);
     const img = body.match(/!\[[^\]]*\]\(<([^>]+)>\)/)?.[1] ?? null;
-    const ocr = body.match(/^> OCR: (.*)$/m)?.[1] ?? null;
+    // OCR 是**块**读:首行 `> OCR: …` + 后续所有引用续行,空行是裸 `>`。
+    // 老笔记只有单行,没有续行 → 读出来就是那一行,天然兼容。
+    const bodyLines = body.split(/\r?\n/);
+    let ocrText = null;
+    const oi = bodyLines.findIndex((l) => /^> OCR: /.test(l));
+    if (oi >= 0) {
+      const parts = [bodyLines[oi].slice("> OCR: ".length)];
+      let j = oi + 1;
+      while (j < bodyLines.length && isOcrContinuation(bodyLines[j])) {
+        parts.push(bodyLines[j] === ">" ? "" : bodyLines[j].slice(2));
+        j += 1;
+      }
+      ocrText = parts.join("\n");
+    }
     const catLine = body.match(/^> 分类: (.*)$/m)?.[1] ?? null;
     const category = tags[0] || (catLine ? catLine.replace(/（弱）$/, "") : null);
     const summary = body.match(/^> 摘要: (.*)$/m)?.[1] ?? null;
     const isKey = /^# \*\*重点\*\*\s*$/m.test(body);
+    // 所有 `>` 行都是插件自己写的元数据/OCR(含续行与裸 `>`),不该混进用户注释。
     const noteLines = body
       .split(/\r?\n/)
       .map((l) => l.trim())
-      .filter(
-        (l) =>
-          l &&
-          !l.startsWith("![") &&
-          !l.startsWith("> OCR") &&
-          !l.startsWith("> 分类") &&
-          !l.startsWith("> 摘要") &&
-          l !== "# **重点**",
-      );
+      .filter((l) => l && !l.startsWith("![") && !l.startsWith(">") && l !== "# **重点**");
     const note = noteLines.length ? noteLines.join("\n") : null;
-    entries.push({ time, kind: tag.slice(1), imageRel: img, ocrText: ocr, category, summary, note, isKey });
+    entries.push({ time, kind: tag.slice(1), imageRel: img, ocrText, category, summary, note, isKey });
   }
   return entries;
 }

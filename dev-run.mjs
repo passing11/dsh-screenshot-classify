@@ -8,7 +8,9 @@
  *
  * 环境变量:
  *   DSC_VAULT_PATH  覆盖 vault 路径
- *   DASHSCOPE_API_KEY  通义 OCR key
+ *
+ * 注意:OCR 只走宿主大模型,独立跑这个脚本时没有宿主 llm 句柄,
+ * 识别那一步必然失败(流程其余部分照常可跑通)。
  */
 import { resolveConfig, saveConfig } from "./config.mjs";
 import { ClipboardWatcher } from "./clipboard.mjs";
@@ -24,7 +26,7 @@ const seconds = secIdx >= 0 ? Number(args[secIdx + 1]) || 0 : 0;
 const config = resolveConfig(process.env.DSC_VAULT_PATH ? { vaultPath: process.env.DSC_VAULT_PATH } : {});
 
 console.log(`[dev] vault: ${config.vaultPath}`);
-console.log(`[dev] OCR:   ${config.ocr.mode}${config.ocr.apiKey ? "" : " (未配置 key,OCR 将失败但流程可跑通)"}`);
+console.log(`[dev] OCR:   ${config.ocr.mode} (独立运行无宿主 llm,识别会失败但流程可跑通)`);
 console.log(`[dev] auto:  ${autoAction || "交互弹窗"}`);
 
 const watcher = new ClipboardWatcher(config, { autoAction });

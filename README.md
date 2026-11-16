@@ -74,9 +74,8 @@ through the host's own multimodal model, **local rule-based classification** int
 
 - **Windows**（依赖系统自带 PowerShell 5.1 + WinForms）
 - **DSH 0.1.7 ~ 0.2.x**（设置页依赖 `configForms`；更早的 DSH 上采集照用、设置页不出现）
-- **宿主大模型 OCR**：需要 DSH 已加载 `llm` + `attachments` 服务，且当前模型在目录里声明了
-  `inputModalities: [text, image]`。不满足会自动回落通义千问
-- 通义千问 API key（**可选**，只在回落时用到）
+- **宿主大模型 OCR**：需要 DSH 已加载 `llm` + `attachments` 服务，且候选模型在目录里声明了
+  `inputModalities: [text, image]`。不满足就报错并列出试过的候选，**不再有外部回落**
 - Obsidian 库（或任意本地 markdown 目录）
 
 ---
@@ -109,10 +108,13 @@ dsh plugin --profile desktop add ./dsh-screenshot-classify-0.3.1.tgz
 
 ## 配置项
 
-设置页分组：**常规** / **OCR** / **分类** / **摘要** / **弹窗** / **归档**。
+设置页分组：**模型** / **常规** / **OCR** / **分类** / **摘要** / **弹窗** / **归档**。
 
 | 键 | 默认 | 说明 |
 |---|---|---|
+| **`modelPrimary`** | `""` | OCR 主模型槽位，写 `provider/model` 或裸 model id |
+| **`modelFallback1`** | `""` | 备选 1，主模型失败才试 |
+| **`modelFallback2`** | `""` | 备选 2，备选 1 也失败才试 |
 | `enabled` | `true` | 总开关 |
 | `vaultPath` | `""` | Obsidian 库根目录（必填，空则采集停用） |
 | `inboxFolder` | `收件箱` | 每日笔记目录 |
@@ -120,12 +122,12 @@ dsh plugin --profile desktop add ./dsh-screenshot-classify-0.3.1.tgz
 | `knowledgeFolder` | `知识库` | 晚间整理后的分类笔记 |
 | `summaryFolder` | `总结` | 当日总结 |
 | `archiveFolder` | `归档` | 归档后的每日笔记 |
-| `ocrMode` | `host` | `host` / `qwen` / `off` |
-| `ocrHostModel` | `""` | 留空自动挑声明了图片模态的模型 |
+| `ocrMode` | `host` | `host` / `off` |
+| `ocrHostModel` | `""` | 只在三个槽位全空时才有意义：留空自动挑声明了图片模态的模型 |
 | **`classifyEnabled`** | `true` | 自动分类总开关。关掉＝退回原插件行为 |
 | **`classifyMinConfidence`** | `0.55` | 低于它算「判不准」，加弱标记 |
 | **`summarizeMode`** | `rules` | `off` / `rules` / `host` |
-| **`summarizeHostModel`** | `""` | `host` 模式用哪个模型，留空用宿主默认 |
+| **`summarizeHostModel`** | `""` | `host` 模式用哪个模型，留空跟随主模型槽位 |
 | **`summarizeMaxChars`** | `120` | 摘要长度上限（20~500） |
 | **`dialogTheme`** | `c1` | `c1` 青碧扫描 / `c2` 靛蓝取景 / `c3` 石墨取景 / `c4` 紫罗兰取景 |
 | `dialogPositionMode` | `cursor` | `cursor` / `fixed` / `remember` |
@@ -134,6 +136,47 @@ dsh plugin --profile desktop add ./dsh-screenshot-classify-0.3.1.tgz
 
 配置文件也可手写：`%USERPROFILE%\.dsh-screenshot-classify\config.json`，
 字段见 [`config.example.json`](config.example.json)。
+
+---
+
+## 模型槽位
+
+设置页最上方是一组「模型」选择器，对应三个槽位 `modelPrimary` / `modelFallback1` / `modelFallback2`。
+
+**怎么填**：写 `provider/model`（如 `deepseek-account/deepseek-v4.1-flash`），或者只写裸 model id
+（此时用宿主默认 provider 补齐；同一 id 在多个 provider 下重名时会被判重成一条，写全 `provider/model` 更稳）。
+
+**怎么试**：OCR 按 主模型 → 备选 1 → 备选 2 的顺序试，**前一个成功就不再试后面的**；
+前一个失败才继续。重复的路由（同一个 `provider/model` 出现两次）**保留先出现的**，后出现的忽略。
+
+**留空**：留空 = 该槽位不参与。三个都留空时退回 0.3.x 的自动选路
+（`ocrHostModel` → 宿主当前默认模型 → 目录里第一个声明图片输入的模型），升级后行为不变。
+
+**图片能力**：选择器里没有声明图片输入的模型仍然**可选**，只是带一行「（无图片输入）」；
+元数据查不到的带「（图片能力未知）」。真正调用时，目录**明确说**不支持图片的候选会被跳过
+（记 `no-image-support`），查不到的不拦（否则所有没写 `inputModalities` 的老适配器一起废掉）。
+
+**测试**：分组下方的「测试主模型」按钮只测当前选中的 `modelPrimary`，发一次 `maxTokens: 8`、
+不带图的最小请求。结果写在按钮下面独立一行（绿色 `连通 · Nms` / 红色 `失败:…`），
+不会被 4 秒就消失的保存提示盖掉。
+
+**模型目录从哪来**：插件向宿主 llm 服务要 provider / model 列表，只读、不缓存。
+目录取不到时选择器是空的，分组下方会显示红字说明原因，其余设置照常可用。
+
+---
+
+## 只读端点
+
+设置页用两个 GET 端点（由宿主 `webServer` 服务注册；该服务不存在时这两个端点不注册，插件其余功能不受影响）：
+
+| 端点 | 说明 |
+|---|---|
+| `GET /plugins/dsh-screenshot-classify/models` | 模型目录：`{ providers: [{ id, name, models: [{ id, name, supportsImage, imageUnknown, efforts, defaultEffort }] }] }` |
+| `GET /plugins/dsh-screenshot-classify/probe?provider=X&model=Y` | 连通性探针：`{ ok, ms, error? }` |
+
+两个端点**恒回 HTTP 200**：服务异常 / 参数缺失都放在响应体的 `error` 字段里
+（只有一个例外：非 GET 请求回 405）。这样设置页永远拿得到 JSON，不会因为一次上游抖动
+在控制台里刷一个 500。探针是一次真实的最小请求，点一次花一次调用。
 
 ---
 
@@ -157,6 +200,8 @@ dsh plugin --profile desktop add ./dsh-screenshot-classify-0.3.1.tgz
 - 弱判定**不动标题行**，只在 OCR 下面加一行 `> 分类: …（弱）`。
   这样「标签检索」永远干净，而「这条别太信」的信息也不丢。
 - 摘要跟在分类行后面，晚间整理时单独成 `## 摘要` 一节。
+- **OCR 是多行块引用**：识别的文字每一行都带 `> `，空行写成裸 `>`，整段是 Obsidian 里的**一个**引用块。
+  （0.3.x 只写一行 `> OCR: …`，文字里的换行会让第二行起变成普通正文，回填时也会被当成用户注释。）
 
 ### 18 个类目
 

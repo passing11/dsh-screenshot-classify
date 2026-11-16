@@ -67,7 +67,13 @@ export function extractiveSummary(text, maxChars = 120) {
 async function resolveTextRoute(config, llm, host) {
   if (!llm || typeof llm.stream !== 'function') return null;
 
-  const preferred = String(config?.summarizeModel || '').trim();
+  // 显式指定的摘要模型 → 主模型槽位(modelPrimary)→ 宿主默认 → 目录第一个。
+  // 这条链的第一级原先读的是 `config.` 开头、以 `Model` 结尾的那个摘要模型键,
+  // 而 schema 里根本没有它 —— 恒空的死配置,写进 config.json 也不会有任何效果,
+  // 一直静默落到下一级。现在改读真存在的 summarizeHostModel / summarize.hostModel。
+  const explicit = String(config?.summarizeHostModel ?? config?.summarize?.hostModel ?? '').trim();
+  const primary = String(config?.model?.primary ?? '').trim();
+  const preferred = explicit || primary;
   const providers = (() => {
     try {
       return (llm.listProviders?.() || []).map((p) => p.id).filter(Boolean);
@@ -179,7 +185,9 @@ export function normalizeSummary(raw) {
  * @returns {{summary: string, via: 'off'|'rules'|'host', error?: string}}
  */
 export async function summarizeOcr(config, text, host = {}) {
-  const mode = String(config?.summarizeMode || 'rules');
+  // core.mjs 传进来的是**嵌套** liveConfig(summarize.mode / summarize.maxChars),
+  // 但这里历史上只读扁平键 —— host 模式在真实路径下从来没生效过。两边都读。
+  const mode = String(config?.summarizeMode ?? config?.summarize?.mode ?? 'rules');
   const clean = String(text || '').trim();
 
   if (mode === 'off') return { summary: '', via: 'off' };
@@ -187,7 +195,8 @@ export async function summarizeOcr(config, text, host = {}) {
   // 「识别失败:...」这种占位文字不值得总结
   if (/^（识别失败[:：]/.test(clean)) return { summary: '', via: 'rules' };
 
-  const maxChars = Number(config?.summarizeMaxChars) > 0 ? Number(config.summarizeMaxChars) : 120;
+  const rawMax = Number(config?.summarizeMaxChars ?? config?.summarize?.maxChars);
+  const maxChars = rawMax > 0 ? rawMax : 120;
 
   // 摘要跟原文一字不差时不要写 —— 那不是摘要,是把 OCR 抄了第二遍。
   // 单句 OCR（比如一句话的新闻、一张单据）必然走到这里:抽取式挑的就是那句原文。

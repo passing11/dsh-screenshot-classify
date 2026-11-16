@@ -44,7 +44,8 @@ const base = {
   enabled: true,
   vaultPath: "E:\\v",
   pollIntervalMs: 200,
-  ocr: { mode: "host", hostModel: "", model: "qwen-vl-plus", apiKey: "", endpoint: "e", prompt: "p" },
+  ocr: { mode: "host", hostModel: "", prompt: "p" },
+  model: { primary: "p/a", fallback1: "", fallback2: "" },
   dialog: { positionMode: "cursor", fixedX: 0, fixedY: 0, offsetX: 16, offsetY: 16, previewMaxWidth: 320, width: 0, height: 0, autoCloseSec: 0 },
 };
 
@@ -56,7 +57,14 @@ assert.equal(merged.dialog.autoCloseSec, 0, "未提及的 dialog 字段应保留
 assert.equal(merged.dialog.previewMaxWidth, 320, "未提及的 dialog 字段应保留旧值");
 assert.equal(merged.vaultPath, "E:\\v", "未提及的顶层字段应保留旧值");
 assert.equal(merged.pollIntervalMs, 200, "未提及的顶层字段应保留旧值");
-assert.equal(merged.ocr.model, "qwen-vl-plus", "ocr 整块未提及时应原样保留");
+assert.equal(merged.ocr.hostModel, "", "ocr 整块未提及时应原样保留");
+assert.equal(merged.model.primary, "p/a", "model 整块未提及时应原样保留");
+
+// 只改一个模型槽位:另外两个槽位必须原样保留(mergeSettings 里 model 那行就是干这个的)
+const mergedModel = mergeSettings(base, { modelPrimary: "p/b" });
+assert.equal(mergedModel.model.primary, "p/b", "主模型槽位应写入");
+assert.equal(mergedModel.model.fallback1, "", "未提及的备选槽位应保留旧值");
+assert.equal(mergedModel.ocr.mode, "host", "改模型槽位不该动 ocr");
 
 // 把 positionMode 改回 cursor(默认值)也必须生效 —— 这正是原来坏掉的那一步
 const back = mergeSettings(merged, { dialogPositionMode: "cursor" });

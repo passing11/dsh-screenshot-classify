@@ -3,73 +3,98 @@ import { readFileSync } from "node:fs";
 const DEFAULT_PROMPT =
   "请识别图片中的全部文字内容,原样输出;数学公式用 LaTeX 输出。只输出识别结果,不要任何解释。";
 
+/** 整条识别链的累计上限:超过就不再试后面的候选。 */
+const CHAIN_DEADLINE_MS = 180000;
+/** 单个候选的上限(还会被剩余预算再压一次)。 */
+const ROUTE_TIMEOUT_MS = 120000;
+
 /**
  * 图片文字识别(OCR)。
  *
- * 三种模式(config.ocr.mode):
+ * 两种模式(config.ocr.mode):
  *   host → **宿主大模型**(DSH 0.1.7+ 的 llm + attachments 服务),零配置、不另要 key
- *   qwen → 通义千问兼容接口(key 取配置,其次环境变量 DASHSCOPE_API_KEY)
  *   off  → 不识别
  *
- * host 模式带**回落链**:宿主没有 llm/attachments、默认模型没声明图片输入、
- * 请求报错或返回空 → 只要有千问 key 就自动回落 qwen;两条都不行才抛错,
- * 并把两条原因都写进错误里(笔记里能直接看到,不静默)。
+ * host 模式按**模型槽位**依次尝试(主模型 → 备选 1 → 备选 2);
+ * 三个槽位都留空时退回 0.3.x 的自动选路(hostModel → 宿主默认 → 目录里第一个带 image 的)。
+ * 候选全部失败就抛错,并把每条原因写进错误里(笔记里能直接看到,不静默)。
  *
  * @param host - 宿主服务句柄 { llm, attachments, agentDefaultModel, logger },由插件注入的 getter 提供
  */
 export async function ocrImage(config, imagePath, host = {}) {
   const mode = config.ocr?.mode ?? "host";
   if (mode === "off") return "";
-  if (mode === "qwen") return ocrQwen(config, imagePath);
   if (mode === "host") return ocrHostWithFallback(config, imagePath, host);
   throw new Error(`OCR: 未知模式 ${mode}`);
 }
 
-/** host 优先,失败回落 qwen,都不行则把两条原因一起抛出 */
-async function ocrHostWithFallback(config, imagePath, host) {
-  const reasons = [];
-  try {
-    return await ocrHost(config, imagePath, host);
-  } catch (err) {
-    reasons.push(`宿主模型: ${err.message}`);
-    host.logger?.warn?.(`dsh-screenshot-capture: 宿主 LLM 识别失败,尝试回落千问 —— ${err.message}`);
-  }
-  const apiKey = config.ocr?.apiKey || process.env.DASHSCOPE_API_KEY;
-  if (!apiKey) {
-    reasons.push("千问: 未配置 key(可选,配了就能兜底)");
-    throw new Error(reasons.join(" | "));
-  }
-  try {
-    return await ocrQwen(config, imagePath);
-  } catch (err) {
-    reasons.push(`千问: ${err.message}`);
-    throw new Error(reasons.join(" | "));
-  }
+/**
+ * "provider/model" 或裸 model id → { provider, model }。
+ * 裸 id 用 defaultProvider 补齐;没有可用的默认 provider 就返回 null(该槽位不参与)。
+ */
+export function parseModelRef(raw, defaultProvider) {
+  const s = String(raw ?? "").trim();
+  if (!s) return null;
+  const at = s.indexOf("/");
+  if (at > 0 && at < s.length - 1) return { provider: s.slice(0, at), model: s.slice(at + 1) };
+  return defaultProvider ? { provider: defaultProvider, model: s } : null;
 }
 
-// ---------------------------------------------------------------- 宿主大模型
+/**
+ * 三个槽位 → 最多 3 个 { provider, model, label }。
+ * 空槽位跳过;重复路由保留先出现的,后出现的忽略。
+ */
+export function resolveOcrChain(config, llm, host = {}) {
+  const slots = [
+    { value: config?.model?.primary, label: "主模型" },
+    { value: config?.model?.fallback1, label: "备选 1" },
+    { value: config?.model?.fallback2, label: "备选 2" },
+  ];
+  let defaultProvider = null;
+  try {
+    defaultProvider = host?.agentDefaultModel?.currentSelection?.()?.provider ?? null;
+  } catch {
+    defaultProvider = null;
+  }
+  if (!defaultProvider) {
+    try {
+      defaultProvider = (llm?.listProviders?.() ?? [])[0]?.id ?? null;
+    } catch {
+      defaultProvider = null;
+    }
+  }
+  const out = [];
+  const seen = new Set();
+  for (const slot of slots) {
+    const ref = parseModelRef(slot.value, defaultProvider);
+    if (!ref) continue;
+    const key = `${ref.provider}/${ref.model}`;
+    if (seen.has(key)) continue; // 后出现的忽略
+    seen.add(key);
+    out.push({ ...ref, label: slot.label });
+  }
+  return out;
+}
+
+/** 把一次失败的调用归类成一个短标签(写进错误信息,方便一眼看出是哪种坏法)。 */
+export function reasonOf(err) {
+  const msg = String(err?.message ?? err);
+  if (err?.name === "AbortError" || /超时|timed out|aborted/i.test(msg)) return "timeout";
+  if (err?.code === "no-image-support" || /没有声明图片输入|不支持图片|no-image/i.test(msg)) return "no-image-support";
+  if (err?.code === "empty-text" || /空文本|空响应/.test(msg)) return "empty-text";
+  if (/模型返回错误|HTTP \d{3}|ECONN|ENOTFOUND|fetch failed/i.test(msg)) return "http-error";
+  return "unknown";
+}
 
 /**
- * 用宿主的大模型做识别(零配置路)。
- *
- * 契约(0.1.7 实测):
- *  ① 图片必须走**附件服务**换 ImageAttachmentRef —— 消息里的 ImageBlock 只认 attachment,
- *     不能塞 base64 data URL;宿主会按模型的像素/字节预算自己重编码。
- *  ② 一次性调用用 `RequestUserInput`({role,content},不带 id/source)最省事。
- *  ③ `ctx.llm` 只有 stream(),没有 call();必须收 text-delta。
- *  ④ 是否支持图片看 **catalog 的 inputModalities**(不是模型真实能力),所以要校验。
+ * 读图 + 过附件服务换 ref。**整条链只做一次** —— 每换一个候选模型都重传一遍图
+ * 是白白翻倍的上传与内存开销。
  */
-async function ocrHost(config, imagePath, host) {
-  const llm = host.llm;
+async function prepareImage(config, imagePath, host) {
   const attachments = host.attachments;
-  if (!llm || typeof llm.stream !== "function") {
-    throw new Error("宿主 llm 服务不可用(需要 DSH 0.1.7+ 且该 profile 已加载 dsh-llm)");
-  }
   if (!attachments || typeof attachments.saveImage !== "function") {
     throw new Error("宿主 attachments 服务不可用(需要 dsh-attachment)");
   }
-
-  const route = await resolveHostRoute(config, llm, host);
 
   const data = readFileSync(imagePath);
   const mediaType = data[0] === 0x89 && data[1] === 0x50 ? "image/png" : "image/jpeg";
@@ -81,18 +106,45 @@ async function ocrHost(config, imagePath, host) {
     throw new Error(`图片 ${(data.byteLength / 1048576).toFixed(1)}MB 超过宿主上限 ${(limits.maxImageBytes / 1048576).toFixed(1)}MB`);
   }
 
-  const ref = await attachments.saveImage({ data, mediaType, name: `screenshot.${mediaType === "image/png" ? "png" : "jpg"}` });
-  const prompt = config.ocr?.prompt || DEFAULT_PROMPT;
+  const ref = await attachments.saveImage({
+    data,
+    mediaType,
+    name: `screenshot.${mediaType === "image/png" ? "png" : "jpg"}`,
+  });
+  return { ref, mediaType, prompt: config.ocr?.prompt || DEFAULT_PROMPT };
+}
+
+/**
+ * 用指定路由识别一次。
+ *
+ * 契约(0.1.7 实测):
+ *  ① 图片必须走**附件服务**换 ImageAttachmentRef —— 消息里的 ImageBlock 只认 attachment,
+ *     不能塞 base64 data URL;宿主会按模型的像素/字节预算自己重编码。
+ *  ② 一次性调用用 `RequestUserInput`({role,content},不带 id/source)最省事。
+ *  ③ `ctx.llm` 只有 stream(),没有 call();必须收 text-delta。
+ *  ④ 是否支持图片看 **catalog 的 inputModalities**(不是模型真实能力),所以要预检。
+ */
+async function ocrViaRoute(route, prepared, llm, host) {
+  // 能力预检:目录**明确说**不支持图片就直接跳过这个候选(换个模型比发一个必败请求便宜)。
+  // 查不到(返回 null)时放行 —— 拿不到元数据就拒会把所有老适配器一起废掉。
+  const support = await imageSupportOf(llm, route.provider, route.model);
+  if (support === false) {
+    const err = new Error(`模型 ${route.provider}/${route.model} 没有声明图片输入(inputModalities 不含 image)`);
+    err.code = "no-image-support";
+    throw err;
+  }
+
   const message = {
     role: "user",
     content: [
-      { type: "text", text: prompt },
-      { type: "image", attachment: ref },
+      { type: "text", text: prepared.prompt },
+      { type: "image", attachment: prepared.ref },
     ],
   };
 
+  const timeoutMs = Math.max(1000, Number(route.timeoutMs) || ROUTE_TIMEOUT_MS);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 120000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   // 识别只要结果,不要推理:推理会吃掉输出预算,把整批变成"解析为空"。
   // 但**不能无条件传**:DSH 的 resolveCallWithInfo() 在模型的 reasoning 元数据缺失时,
   // 只要看到 reasoningEffort 就抛 UNSUPPORTED_REASONING_EFFORT(实测
@@ -110,12 +162,12 @@ async function ocrHost(config, imagePath, host) {
       signal: controller.signal,
     });
   } catch (err) {
-    if (err?.name === "AbortError") throw new Error("宿主模型调用超时(120s)");
+    if (err?.name === "AbortError") throw new Error(`宿主模型调用超时(${Math.round(timeoutMs / 1000)}s)`);
     // 兜底:能力查询与真实 dispatch 之间若仍对不上(适配器 HMR、目录变化),
     // 去掉 effort 再试一次 —— 少一个控制项,好过整条识别失败。
     if (effort !== undefined && /UNSUPPORTED_REASONING_EFFORT/.test(String(err?.message ?? ""))) {
       host.logger?.warn?.(
-        `dsh-screenshot-capture: ${route.provider}/${route.model} 拒绝 reasoningEffort=${effort},改为不指定后重试`,
+        `dsh-screenshot-classify: ${route.provider}/${route.model} 拒绝 reasoningEffort=${effort},改为不指定后重试`,
       );
       out = await streamText(llm, {
         provider: route.provider,
@@ -132,8 +184,56 @@ async function ocrHost(config, imagePath, host) {
   }
 
   const text = out.trim();
-  if (!text) throw new Error("宿主模型返回空文本");
+  if (!text) {
+    const err = new Error("宿主模型返回空文本");
+    err.code = "empty-text";
+    throw err;
+  }
   return text;
+}
+
+/**
+ * host 模式的入口:按槽位链依次试,全失败才抛错。
+ *
+ * 三个槽位都留空时走 `resolveHostRoute()`(0.3.x 的老行为:hostModel → 宿主默认 →
+ * 目录里第一个声明 image 的模型),单条,不带链 —— 老用户升级后行为不变。
+ */
+async function ocrHostWithFallback(config, imagePath, host) {
+  const llm = host.llm;
+  if (!llm || typeof llm.stream !== "function") {
+    throw new Error("宿主 llm 服务不可用(需要 DSH 0.1.7+ 且该 profile 已加载 dsh-llm)");
+  }
+  const prepared = await prepareImage(config, imagePath, host); // 图片只 saveImage 一次
+  const chain = resolveOcrChain(config, llm, host);
+
+  if (chain.length === 0) {
+    const route = await resolveHostRoute(config, llm, host); // 0.3.x 行为,单条
+    return ocrViaRoute(route, prepared, llm, host);
+  }
+
+  const deadline = Date.now() + CHAIN_DEADLINE_MS;
+  const failures = [];
+  for (const route of chain) {
+    const left = deadline - Date.now();
+    if (left <= 0) {
+      failures.push({ key: `${route.provider}/${route.model}`, label: route.label, reason: "timeout", detail: "整链累计超过 180s" });
+      continue;
+    }
+    try {
+      return await ocrViaRoute({ ...route, timeoutMs: Math.min(ROUTE_TIMEOUT_MS, left) }, prepared, llm, host);
+    } catch (err) {
+      const detail = String(err?.message ?? err);
+      const reason = reasonOf(err);
+      failures.push({ key: `${route.provider}/${route.model}`, label: route.label, reason, detail });
+      host.logger?.warn?.(
+        `dsh-screenshot-classify: OCR 候选 ${route.provider}/${route.model} 失败(${reason})—— ${detail}`,
+      );
+    }
+  }
+  throw new Error(
+    `OCR 全部失败(试过 ${failures.length} 个模型):` +
+      failures.map((f) => `${f.label} ${f.key} → ${f.reason}(${f.detail})`).join(" | "),
+  );
 }
 
 /**
@@ -179,8 +279,35 @@ export async function pickReasoningEffort(llm, route) {
 }
 
 /**
+ * 该模型是否声明了 image 模态。
+ * 返回 true / false(=目录明确说没有)/ null(=查不到,调用方自己决定放不放行)。
+ */
+async function imageSupportOf(llm, provider, model) {
+  if (typeof llm?.resolveModelInfo === "function") {
+    try {
+      const info = await llm.resolveModelInfo(provider, model);
+      const declared = Array.isArray(info?.inputModalities) ? info.inputModalities : null;
+      if (declared) return declared.includes("image");
+    } catch {
+      /* 元数据不可用,退回目录 */
+    }
+  }
+  try {
+    const models = await llm?.listModels?.(provider);
+    const hit = (models ?? []).find((m) => m?.id === model);
+    if (hit) {
+      const declared = Array.isArray(hit.inputModalities) ? hit.inputModalities : null;
+      if (declared) return declared.includes("image");
+    }
+  } catch {
+    /* 目录不可用 → 未知 */
+  }
+  return null;
+}
+
+/**
  * 选宿主模型路由:先看显式配置的 hostModel,再看宿主默认模型,最后在目录里
- * 找第一个声明了 image 模态的。选不出来就抛错(交给回落链)。
+ * 找第一个声明了 image 模态的。选不出来就抛错。
  */
 async function resolveHostRoute(config, llm, host) {
   const want = String(config.ocr?.hostModel ?? "").trim();
@@ -217,8 +344,9 @@ async function resolveHostRoute(config, llm, host) {
     const key = `${cand.provider}/${cand.model}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    if (await modelAcceptsImage(llm, cand)) {
-      host.logger?.info?.(`dsh-screenshot-capture: OCR 使用宿主模型 ${key}(${cand.why})`);
+    // 查不到能力就放行(老适配器没有 inputModalities 元数据,拒了等于全废)
+    if ((await imageSupportOf(llm, cand.provider, cand.model)) !== false) {
+      host.logger?.info?.(`dsh-screenshot-classify: OCR 使用宿主模型 ${key}(${cand.why})`);
       return cand;
     }
   }
@@ -226,66 +354,6 @@ async function resolveHostRoute(config, llm, host) {
   const tried = [...seen].join(", ") || "（无候选）";
   throw new Error(
     `宿主没有声明图片输入的模型(试过 ${tried});` +
-      `可在 DSH 设置里给模型加 inputModalities: [text, image],或在插件设置里指定 ocrHostModel`,
+      `可在 DSH 设置里给模型加 inputModalities: [text, image],或在插件设置里指定模型槽位`,
   );
-}
-
-/** catalog 里该模型是否声明了 image 模态(宿主拦图片请求就是看这个);查不到就放行让请求自己报错 */
-async function modelAcceptsImage(llm, { provider, model }) {
-  try {
-    const models = await llm.listModels(provider);
-    const hit = (models ?? []).find((m) => m.id === model);
-    if (!hit) return true;
-    return (hit.inputModalities ?? []).includes("image");
-  } catch {
-    return true;
-  }
-}
-
-// ------------------------------------------------------------------ 通义千问
-
-async function ocrQwen(config, imagePath) {
-  const apiKey = config.ocr?.apiKey || process.env.DASHSCOPE_API_KEY;
-  if (!apiKey) throw new Error("未配置通义 API key(配置 config.json 或环境变量 DASHSCOPE_API_KEY)");
-
-  const b64 = readFileSync(imagePath).toString("base64");
-  const mime = imagePath.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg";
-  const endpoint = config.ocr?.endpoint ?? "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
-  const model = config.ocr?.model ?? "qwen-vl-plus";
-  const prompt = config.ocr?.prompt ?? DEFAULT_PROMPT;
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 60000);
-  try {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } },
-              { type: "text", text: prompt },
-            ],
-          },
-        ],
-      }),
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`通义接口 ${res.status} ${body.slice(0, 300)}`);
-    }
-    const data = await res.json();
-    const text = data?.choices?.[0]?.message?.content;
-    if (typeof text !== "string") throw new Error("通义返回格式异常");
-    return text.trim();
-  } finally {
-    clearTimeout(timer);
-  }
 }

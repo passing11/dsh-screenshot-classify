@@ -17,15 +17,16 @@ export const DEFAULT_CONFIG = Object.freeze({
   recycleFolder: "回收站",
   ocr: {
     // 默认走**宿主大模型**(DSH 0.1.7+ 的 llm + attachments 服务):零配置、不用另申请 key。
-    // 宿主不可用 / 模型没声明图片输入时自动回落 qwen。取值:"host" | "qwen" | "off"
+    // 取值:"host" | "off"。没有外部回落通道 —— 候选模型全失败时直接报错并列出试过的路由。
+    // 历史键 model / apiKey / endpoint 已废弃:残留在本文件里也不会被读取、不报错。
     mode: "host",
     // 空 = 跟随 DSH 当前默认模型;填了则强制用该模型(仍需它声明 inputModalities 含 image)
     hostModel: "",
-    model: "qwen-vl-plus",
-    apiKey: "",
-    endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
     prompt: "请识别图片中的全部文字内容,原样输出;数学公式用 LaTeX 输出。只输出识别结果,不要任何解释。",
   },
+  // 模型槽位:三个都可留空(留空 = 不参与)。值写 "provider/model" 或裸 model id。
+  // 按 主模型 → 备选 1 → 备选 2 的顺序试,前一个失败才试下一个;重复的路由后出现的忽略。
+  model: { primary: "", fallback1: "", fallback2: "" },
   dialog: {
     // 悬浮窗出现在哪儿。三种模式各管各的:
     //   "cursor"   = 跟着鼠标(默认,历史行为)
@@ -69,7 +70,8 @@ export const DEFAULT_CONFIG = Object.freeze({
   summarize: {
     // "off" = 不写;"rules" = 本地抽取式(免费,默认);"host" = 交给宿主文本模型(更通顺,花一点点钱)
     mode: "rules",
-    // 空 = 跟随 DSH 当前默认模型;也可写 "provider/model" 或裸 model id
+    // 留空 = 跟随主模型槽位(modelPrimary);主模型也空才用宿主默认模型。
+    // 也可写 "provider/model" 或裸 model id
     hostModel: "",
     // 摘要长度上限(汉字)。rules 模式下也按这个截断。
     maxChars: 120,

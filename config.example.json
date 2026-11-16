@@ -1,5 +1,5 @@
 {
-  "//": "dsh-screenshot-classify 配置示例。复制到 %USERPROFILE%\\.dsh-screenshot-classify\\config.json 并按需改。也可以用设置页改（推荐）。OCR 默认走宿主自带的多模态模型（mode \"host\"，不需要任何 key）；\"qwen\" 走通义千问 API，需要 apiKey 或 DASHSCOPE_API_KEY 环境变量。",
+  "//": "dsh-screenshot-classify 配置示例。复制到 %USERPROFILE%\\.dsh-screenshot-classify\\config.json 并按需改。也可以用设置页改（推荐）。OCR 只走宿主自带的模型（mode \"host\"），不需要任何 key。",
   "enabled": true,
   "vaultPath": "D:\\path\\to\\obsidian-vault",
   "inboxFolder": "收件箱",
@@ -9,11 +9,15 @@
   "archiveFolder": "归档",
   "recycleFolder": "回收站",
   "ocr": {
+    "//": "mode: \"host\" = 用宿主模型识别（默认）；\"off\" = 不识别。历史键 model / apiKey / endpoint 已废弃，留在这里也不读取。",
     "mode": "host",
-    "hostModel": "",
-    "model": "qwen-vl-plus",
-    "apiKey": "",
-    "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    "hostModel": ""
+  },
+  "model": {
+    "//": "模型槽位，三个都可留空（留空 = 不参与）。值写 \"provider/model\" 或裸 model id。按 主模型 → 备选 1 → 备选 2 依次试，前一个失败才试下一个；重复的路由后出现的忽略。三个都空 = 自动选路。",
+    "primary": "",
+    "fallback1": "",
+    "fallback2": ""
   },
   "classify": {
     "//": "按内容自动分类。纯本地规则，免费。关掉就退回原插件的行为（只打 #文档/#图片）。",
@@ -21,7 +25,7 @@
     "minConfidence": 0.55
   },
   "summarize": {
-    "//": "存文档（#文档）时按 OCR 内容写一句摘要。off=不写；rules=本地抽取式，免费但质量一般；host=交给宿主文本模型写一句人话。",
+    "//": "存文档（#文档）时按 OCR 内容写一句摘要。off=不写；rules=本地抽取式，免费但质量一般；host=交给宿主文本模型写一句人话（hostModel 留空则跟随主模型槽位）。",
     "mode": "rules",
     "hostModel": "",
     "maxChars": 120

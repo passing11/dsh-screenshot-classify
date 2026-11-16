@@ -1,6 +1,6 @@
 {
   "name": "dsh-screenshot-classify",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Screenshot capture with automatic content classification for DeepSeek Harness: clipboard watcher + system floating window (comment / key-point / category picker) + zero-config OCR through the host's own multimodal model + automatic #category tagging + one-line summary for saved documents + Obsidian per-day merging + evening AI organization. 截图即存 · 自动分类:剪贴板监听 + 鼠标位置悬浮窗 + 用宿主大模型零配置识别 + 按内容自动打 #类目 标签 + 存文档时自动写一句摘要 + Obsidian 按天合并 + 晚间整理",
   "type": "module",
   "main": "index.mjs",
@@ -44,7 +44,7 @@
   "scripts": {
     "dev": "node dev-run.mjs",
     "dev:auto": "node dev-run.mjs --auto doc",
-    "test": "node test/test-format.mjs && node test/test-storage.mjs && node test/test-reasoning.mjs && node test/test-autoclose.mjs && node test/test-config-shape.mjs && node test/test-single-instance.mjs && node test/test-settings-reload.mjs && node test/test-classify.mjs && node test/test-summarize.mjs",
+    "test": "node test/test-format.mjs && node test/test-storage.mjs && node test/test-reasoning.mjs && node test/test-autoclose.mjs && node test/test-config-shape.mjs && node test/test-single-instance.mjs && node test/test-settings-reload.mjs && node test/test-classify.mjs && node test/test-summarize.mjs && node test/test-model-chain.mjs && node test/test-ocr-layout.mjs",
     "test:ocr": "node test/test-ocr.mjs",
     "test:classify": "node test/test-classify.mjs",
     "test:summarize": "node test/test-summarize.mjs",

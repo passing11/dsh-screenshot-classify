@@ -33,8 +33,24 @@ window.__ModuleLoader__.load({
       ocrModeHost: "宿主大模型(默认,零配置)",
       ocrModeOff: "关闭(只存图不识别)",
       ocrHostModel: "宿主模型",
-      ocrHostModelHint: "留空 = 跟随 DSH 当前默认模型;填模型 id 可强制指定",
-      ocrFallbackHint: "宿主模型不可用时自动回落通义千问(key 从环境变量 DASHSCOPE_API_KEY 读取,无需在此配置)",
+      ocrHostModelHint: "留空 = 跟随主模型槽位(modelPrimary);主模型也留空才用 DSH 当前默认模型",
+      model: "模型",
+      modelPrimary: "主模型",
+      modelFallback1: "备选 1",
+      modelFallback2: "备选 2",
+      modelHint: "写 provider/model 或裸 model id。OCR 按 主模型 → 备选 1 → 备选 2 依次试,前一个失败才试下一个;重复的留先出现的。",
+      modelNote: "留空 = 该槽位不参与。三个都留空时退回自动选路(宿主默认模型 → 目录里第一个声明图片输入的)。",
+      modelNone: "（不用）",
+      modelPick: "选择",
+      modelNoImage: "（无图片输入）",
+      modelImageUnknown: "（图片能力未知）",
+      modelTest: "测试主模型",
+      modelTesting: "测试中…",
+      modelOk: "连通 · ",
+      modelFail: "失败:",
+      modelCatalogFail: "模型目录不可用:",
+      modelPickFirst: "请先选主模型",
+      modelNoProvider: "无法确定 provider(裸 model id 在目录里找不到),请写成 provider/model",
       dialog: "悬浮窗",
       dialogTheme: "弹窗主题",
       dialogThemeHint: "四套配色与图标画法。切换后弹窗要重开一次才生效(剪贴板助手启动时读一次主题)。",
@@ -97,8 +113,24 @@ window.__ModuleLoader__.load({
       ocrModeHost: "Host model (default, zero config)",
       ocrModeOff: "Off (store without OCR)",
       ocrHostModel: "Host model",
-      ocrHostModelHint: "Leave empty to follow the current DSH default model; set a model id to pin one",
-      ocrFallbackHint: "Falls back to Tongyi Qianwen when the host model is unavailable (key read from DASHSCOPE_API_KEY; not configured here)",
+      ocrHostModelHint: "Leave empty to follow the primary model slot (modelPrimary); the DSH default model is used only when that is empty too",
+      model: "Models",
+      modelPrimary: "Primary",
+      modelFallback1: "Fallback 1",
+      modelFallback2: "Fallback 2",
+      modelHint: "Write provider/model or a bare model id. OCR tries primary → fallback 1 → fallback 2, moving on only after a failure; duplicates keep the first.",
+      modelNote: "Empty means the slot is skipped. With all three empty it falls back to auto-routing (host default model → first catalog model declaring image input).",
+      modelNone: "(none)",
+      modelPick: "Pick",
+      modelNoImage: "(no image input)",
+      modelImageUnknown: "(image support unknown)",
+      modelTest: "Test primary",
+      modelTesting: "Testing…",
+      modelOk: "Reachable · ",
+      modelFail: "Failed: ",
+      modelCatalogFail: "Model catalog unavailable: ",
+      modelPickFirst: "Pick a primary model first",
+      modelNoProvider: "Cannot determine the provider (bare model id not found in the catalog) — use provider/model",
       dialog: "Floating window",
       dialogTheme: "Popup theme",
       dialogThemeHint: "Four palettes with their own header icon. The popup reads the theme once when the clipboard helper starts, so reopen it after switching.",
@@ -162,6 +194,11 @@ window.__ModuleLoader__.load({
       ".scc-seg-btn+.scc-seg-btn{border-left:1px solid var(--dsw-alias-border-l2)}",
       ".scc-seg-btn:hover{background:var(--dsw-alias-bg-layer-2)}",
       ".scc-seg-on,.scc-seg-on:hover{background:var(--dsw-alias-state-business-primary);color:#fff}",
+      ".scc-model-list{max-height:240px;overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:6px;margin-top:6px}",
+      ".scc-model-btn{display:block;width:100%;text-align:left;height:28px;padding:0 8px;border:0;border-radius:4px;background:transparent;color:inherit;font:inherit;font-size:12px;cursor:pointer}",
+      ".scc-model-btn:hover{background:var(--dsw-alias-bg-layer-2)}",
+      ".scc-model-group{margin-top:6px}",
+      ".scc-status-ok{color:#2f9e44}",
     ].join("");
 
     /** 一行标签 + 控件 + 提示 */
@@ -241,6 +278,81 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /**
+     * 模型选择器。
+     *
+     * 同样**不用 `<select>`** —— 见上面 Segmented 的注释,设置页里 select 选的值存不进去。
+     * 收起态显示当前值 + 「选择」;展开态第一项是「（不用）」(→ onSelect("")),
+     * 之后按 provider 分组,每个模型一个按钮,值是 `provider/model`。
+     *
+     * 没有声明图片输入的模型**也能选** —— 只加一行后缀提示。截图识别用的模型
+     * 由目录决定,有些老适配器不报 inputModalities,一刀切禁选等于把它们全废了。
+     */
+    function ModelPicker({ value, catalog, onSelect, t }) {
+      const [open, setOpen] = useState(false);
+      const current = String(value || "");
+      const label = current || t("modelNone");
+      const suffixOf = (m) => (m.imageUnknown ? t("modelImageUnknown") : m.supportsImage ? "" : t("modelNoImage"));
+      const providers = catalog.providers || [];
+
+      return h("div", null,
+        h("div", { style: { display: "flex", gap: "8px", alignItems: "center" } }, [
+          h("code", {
+            key: "v",
+            style: {
+              flex: "1",
+              fontSize: "12px",
+              padding: "6px 8px",
+              borderRadius: "6px",
+              border: "1px solid var(--dsw-alias-border-l2)",
+              background: "var(--dsw-alias-bg-layer-1)",
+              color: current ? "inherit" : "var(--dsw-alias-label-tertiary)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            },
+          }, label),
+          h("button", {
+            key: "b",
+            type: "button",
+            className: "scc-seg-btn",
+            onClick: () => setOpen((v2) => !v2),
+          }, t("modelPick")),
+        ]),
+        open
+          ? h("div", { className: "scc-model-list" }, [
+              h("button", {
+                key: "__none__",
+                type: "button",
+                className: "scc-model-btn",
+                onClick: () => {
+                  setOpen(false);
+                  if (current !== "") onSelect("");
+                },
+              }, t("modelNone")),
+              ...providers.map((p) =>
+                h("div", { key: `p:${p.id}`, className: "scc-model-group" }, [
+                  h("div", { key: "h", className: "scc-hint", style: { padding: "2px 8px" } }, p.name || p.id),
+                  ...(p.models || []).map((m) => {
+                    const key = `${p.id}/${m.id}`;
+                    const suffix = suffixOf(m);
+                    return h("button", {
+                      key,
+                      type: "button",
+                      className: "scc-model-btn",
+                      onClick: () => {
+                        setOpen(false);
+                        if (key !== current) onSelect(key);
+                      },
+                    }, suffix ? `${m.name || m.id}  ${suffix}` : (m.name || m.id));
+                  }),
+                ]),
+              ),
+            ])
+          : null,
+      );
+    }
+
     /** 设置页:绑定 settings 命名空间,展示并保存配置 */
     function ConfigSection({ scope, t }) {
       const [snap, setSnap] = useState(() => scope.getSnapshot());
@@ -294,11 +406,135 @@ window.__ModuleLoader__.load({
         attempt(true);
       };
 
+      /**
+       * 模型目录 + 探针状态。
+       *
+       * **两个 hook 必须放在下面那两个 early-return 之前** —— 放在它们后面,
+       * snap 从 loading 变成 ready 时 hook 数量会从少变多,React 的 hook 顺序
+       * 就断了(会直接报 "Rendered more hooks than during the previous render")。
+       */
+      const [catalog, setCatalog] = useState({ providers: [], error: "" });
+      const [probe, setProbe] = useState({ busy: false, text: "", bad: false });
+      useEffect(() => {
+        let alive = true;
+        fetch("/plugins/dsh-screenshot-classify/models")
+          .then((r) => r.json())
+          .then((j) => {
+            if (!alive) return;
+            setCatalog({
+              providers: Array.isArray(j?.providers) ? j.providers : [],
+              error: j?.error || "",
+            });
+          })
+          .catch((e) => {
+            if (!alive) return;
+            setCatalog({ providers: [], error: String(e?.message ?? e) });
+          });
+        return () => {
+          alive = false;
+        };
+      }, []);
+
       if (snap.status === "loading") return h("p", { className: "scc-status" }, t("loading"));
       if (snap.status === "unavailable") return h("p", { className: "scc-status" }, t("unavailable"));
       const v = snap.value || {};
 
+      /**
+       * 测一次连通性:只测当前选中的主模型(modelPrimary)。
+       *
+       * 结果写在**独立一行**(probe 状态),不复用 4 秒就消失的 flash ——
+       * 探针可能跑十几秒,用 flash 会「刚显示就消失」。
+       */
+      const runProbe = () => {
+        const raw = String(v.modelPrimary || "").trim();
+        if (!raw) {
+          setProbe({ busy: false, text: t("modelPickFirst"), bad: true });
+          return;
+        }
+        let provider = "";
+        let model = "";
+        const at = raw.indexOf("/");
+        if (at > 0 && at < raw.length - 1) {
+          provider = raw.slice(0, at);
+          model = raw.slice(at + 1);
+        } else {
+          // 裸 model id:在目录里反查它属于哪个 provider(同名时取第一个)
+          for (const p of catalog.providers || []) {
+            if ((p.models || []).some((m) => m.id === raw)) {
+              provider = p.id;
+              model = raw;
+              break;
+            }
+          }
+          if (!provider) {
+            setProbe({ busy: false, text: t("modelNoProvider"), bad: true });
+            return;
+          }
+        }
+        setProbe({ busy: true, text: t("modelTesting"), bad: false });
+        fetch(
+          `/plugins/dsh-screenshot-classify/probe?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`,
+        )
+          .then((r) => r.json())
+          .then((j) => {
+            if (j?.ok) setProbe({ busy: false, text: `${t("modelOk")}${j.ms}ms`, bad: false });
+            else setProbe({ busy: false, text: `${t("modelFail")}${j?.error ?? "unknown"}`, bad: true });
+          })
+          .catch((e) => {
+            setProbe({ busy: false, text: `${t("modelFail")}${String(e?.message ?? e)}`, bad: true });
+          });
+      };
+
       return h("div", { className: "scc-config" }, [
+        h("div", { className: "scc-group" }, [
+          h("h3", null, t("model")),
+          Field({
+            label: t("modelPrimary"),
+            children: h(ModelPicker, {
+              value: v.modelPrimary || "",
+              catalog,
+              onSelect: (val) => save("modelPrimary", val),
+              t,
+            }),
+          }),
+          Field({
+            label: t("modelFallback1"),
+            children: h(ModelPicker, {
+              value: v.modelFallback1 || "",
+              catalog,
+              onSelect: (val) => save("modelFallback1", val),
+              t,
+            }),
+          }),
+          Field({
+            label: t("modelFallback2"),
+            children: h(ModelPicker, {
+              value: v.modelFallback2 || "",
+              catalog,
+              onSelect: (val) => save("modelFallback2", val),
+              t,
+            }),
+          }),
+          h("div", { className: "scc-hint" }, t("modelHint")),
+          h("div", { className: "scc-hint" }, t("modelNote")),
+          h("div", { className: "scc-row", style: { marginTop: "8px" } }, [
+            h("button", {
+              key: "probe",
+              type: "button",
+              className: "scc-seg-btn",
+              disabled: probe.busy,
+              onClick: runProbe,
+            }, probe.busy ? t("modelTesting") : t("modelTest")),
+          ]),
+          probe.text
+            ? h("div", {
+                className: probe.bad ? "scc-status scc-status-bad" : "scc-status scc-status-ok",
+              }, probe.text)
+            : null,
+          catalog.error
+            ? h("div", { className: "scc-status scc-status-bad" }, `${t("modelCatalogFail")}${catalog.error}`)
+            : null,
+        ]),
         h("div", { className: "scc-group" }, [
           h("h3", null, t("general")),
           h("div", { className: "scc-switch" }, [
@@ -345,7 +581,6 @@ window.__ModuleLoader__.load({
             hint: t("ocrHostModelHint"),
             children: h(TextInput, { value: v.ocrHostModel || "", onCommit: (val) => save("ocrHostModel", val) }),
           }),
-          h("div", { className: "scc-hint" }, t("ocrFallbackHint")),
         ]),
         h("div", { className: "scc-group" }, [
           h("h3", null, t("dialog")),
