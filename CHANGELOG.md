@@ -2,6 +2,43 @@
 
 本项目沿用 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的写法。
 
+## [0.4.1] - 2026-11-17
+
+让设置页能主动去上游重拉模型表 —— 之前那份是启动时的快照。
+
+### 新增
+
+- **设置页「刷新模型列表」按钮**。原来目录只在设置页打开时读一次，而宿主那边的
+  `listModels()` 是各 provider 插件**启动时**拉下来缓存的 —— 装了新适配器、或上游
+  下架/改名/新增了模型，不重开页面就永远看不到。
+
+  点这个按钮走的是 `POST /plugins/dsh-screenshot-classify/refresh`：先让各 provider
+  插件去上游重拉并写回自己的设置，**再**读目录回给前端。顺序是刻意的 —— 反过来做
+  等于把旧表再念一遍，用户点了刷新却什么都没变，还以为按钮坏了。
+
+  实测一次（本机）：`workbuddy` 15 个 / `workbuddy-global` 31 个 / `trae` 35 个 /
+  `trae-global` 26 个，4/4 成功、9.2 秒。刷新后 `trae` 的目录从
+  `kimi-k3.1-pro / qwen3.8-max` 变成 `glm-5.3-flash / mimo-v2.6-flash / minimax-m3.1-flash`
+  —— 旧表确实只是启动快照。
+
+  单个 provider 刷新失败不影响其它，结果逐条回给前端，显示成
+  「已刷新: 6 个 provider · 20 个模型 · workbuddy-global:HTTP 500」这样。
+  **刷新失败不清空已有列表**：留着旧的好过白板。
+
+### 修复
+
+- **刷新请求必须带 `region` 参数**。workbuddy 与 trae 都是双区插件
+  （`cn`/`global`、`cn`/`ai`），不带 region 时上游只回当前默认区，另一个区的模型
+  永远刷不到。目标表按 `plugin → path → regions → providers` 写死，与
+  `dsh-tes-config` 的做法一致。
+
+- **限并发 2**。全铺开等于同时向同一家上游打一串请求，撞上它的并发限流后结论会变成
+  「一堆失败」，而那是我自己压出来的假象，不是上游真实状态。
+
+- **必须绝对 URL**。宿主侧 `fetch` 是 Node 的，相对路径报
+  `Failed to parse URL from /plugins/...`；`originOf(req)` 优先用
+  `webServer.getOrigin()`，拿不到才退回请求头的 `host` + `x-forwarded-proto`。
+
 ## [0.4.0] - 2026-11-17
 
 把 OCR 的模型选择权交回用户，顺手修掉三处「配置写了但从来没生效」的暗坑。

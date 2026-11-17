@@ -49,6 +49,12 @@ window.__ModuleLoader__.load({
       modelOk: "连通 · ",
       modelFail: "失败:",
       modelCatalogFail: "模型目录不可用:",
+      modelRefresh: "刷新模型列表",
+      modelRefreshing: "刷新中…",
+      modelRefreshOk: "已刷新:",
+      modelRefreshCount: " 个模型",
+      modelRefreshProviders: " 个 provider · ",
+      modelRefreshHint: "列表在设置页打开时读一次。新装了 provider、或在 DSH 里加了模型之后,点这里重新读一次。",
       modelPickFirst: "请先选主模型",
       modelNoProvider: "无法确定 provider(裸 model id 在目录里找不到),请写成 provider/model",
       dialog: "悬浮窗",
@@ -129,6 +135,12 @@ window.__ModuleLoader__.load({
       modelOk: "Reachable · ",
       modelFail: "Failed: ",
       modelCatalogFail: "Model catalog unavailable: ",
+      modelRefresh: "Refresh models",
+      modelRefreshing: "Refreshing…",
+      modelRefreshOk: "Refreshed: ",
+      modelRefreshCount: " models",
+      modelRefreshProviders: " providers · ",
+      modelRefreshHint: "The list is read once when this page opens. After installing a provider or adding models in DSH, click here to read it again.",
       modelPickFirst: "Pick a primary model first",
       modelNoProvider: "Cannot determine the provider (bare model id not found in the catalog) — use provider/model",
       dialog: "Floating window",
@@ -415,24 +427,63 @@ window.__ModuleLoader__.load({
        */
       const [catalog, setCatalog] = useState({ providers: [], error: "" });
       const [probe, setProbe] = useState({ busy: false, text: "", bad: false });
-      useEffect(() => {
-        let alive = true;
-        fetch("/plugins/dsh-screenshot-classify/models")
+      /**
+       * 目录读取。首次进页面读一次,「刷新模型列表」按钮再按需读一次 ——
+       * 宿主那边 provider / 模型是会变的(装了新适配器、在 DSH 设置里加了模型),
+       * 页面不重开就永远看不到。读失败不清空已有列表:刷新失败时留着旧的好过白板。
+       */
+      const [catalogBusy, setCatalogBusy] = useState(false);
+      const [catalogNote, setCatalogNote] = useState("");
+      const loadCatalog = (announce) => {
+        if (announce) {
+          setCatalogBusy(true);
+          setCatalogNote("");
+        }
+        /**
+         * 两种读法,回答的问题不同:
+         *  · 挂载时 GET /models —— 只是问宿主「你现在有哪些模型」,快、免费、不动任何东西;
+         *  · 点「刷新」时 POST /refresh —— 让各 provider 插件去**上游**重拉一遍再写回,
+         *    然后才读目录。只 GET 的话目录是启动时缓存的旧表,用户点了刷新却看不出变化,
+         *    还以为按钮坏了。
+         */
+        const url = announce
+          ? "/plugins/dsh-screenshot-classify/refresh"
+          : "/plugins/dsh-screenshot-classify/models";
+        fetch(url, announce ? { method: "POST", headers: { accept: "application/json" } } : undefined)
           .then((r) => r.json())
           .then((j) => {
-            if (!alive) return;
-            setCatalog({
-              providers: Array.isArray(j?.providers) ? j.providers : [],
-              error: j?.error || "",
-            });
+            const providers = Array.isArray(j?.providers) ? j.providers : [];
+            setCatalog((prev) => (providers.length || !prev.providers.length ? { providers, error: j?.error || "" } : prev));
+            if (announce) {
+              const n = providers.reduce((sum, p) => sum + (p.models?.length || 0), 0);
+              if (j?.error) {
+                setCatalogNote(`${t("modelCatalogFail")}${j.error}`);
+              } else {
+                // 顺带说清刷新本身的结果:某个 provider 去上游拉失败时,
+                // 目录里它仍是旧表 —— 不说明的话用户会以为刷新没生效。
+                const rf = j?.refresh;
+                const bad = (rf?.results || []).filter((r) => r.status !== "ok");
+                const base = `${t("modelRefreshOk")}${providers.length}${t("modelRefreshProviders")}${n}${t("modelRefreshCount")}`;
+                setCatalogNote(
+                  bad.length === 0
+                    ? base
+                    : `${base} · ${bad.map((r) => `${r.provider}:${r.reason || r.status}`).join("; ")}`,
+                );
+              }
+            }
           })
           .catch((e) => {
-            if (!alive) return;
-            setCatalog({ providers: [], error: String(e?.message ?? e) });
+            if (announce) setCatalogNote(`${t("modelCatalogFail")}${String(e?.message ?? e)}`);
+            else setCatalog({ providers: [], error: String(e?.message ?? e) });
+          })
+          .finally(() => {
+            if (announce) setCatalogBusy(false);
           });
-        return () => {
-          alive = false;
-        };
+      };
+      useEffect(() => {
+        loadCatalog(false);
+        // 只在挂载时读一次;刷新走按钮
+        // eslint-disable-next-line react-hooks/exhaustive-deps
       }, []);
 
       if (snap.status === "loading") return h("p", { className: "scc-status" }, t("loading"));
@@ -517,7 +568,14 @@ window.__ModuleLoader__.load({
           }),
           h("div", { className: "scc-hint" }, t("modelHint")),
           h("div", { className: "scc-hint" }, t("modelNote")),
-          h("div", { className: "scc-row", style: { marginTop: "8px" } }, [
+          h("div", { className: "scc-row", style: { marginTop: "8px", gap: "8px" } }, [
+            h("button", {
+              key: "refresh",
+              type: "button",
+              className: "scc-seg-btn",
+              disabled: catalogBusy,
+              onClick: () => loadCatalog(true),
+            }, catalogBusy ? t("modelRefreshing") : t("modelRefresh")),
             h("button", {
               key: "probe",
               type: "button",
@@ -526,10 +584,14 @@ window.__ModuleLoader__.load({
               onClick: runProbe,
             }, probe.busy ? t("modelTesting") : t("modelTest")),
           ]),
+          h("div", { className: "scc-hint" }, t("modelRefreshHint")),
           probe.text
             ? h("div", {
                 className: probe.bad ? "scc-status scc-status-bad" : "scc-status scc-status-ok",
               }, probe.text)
+            : null,
+          catalogNote
+            ? h("div", { className: "scc-status" }, catalogNote)
             : null,
           catalog.error
             ? h("div", { className: "scc-status scc-status-bad" }, `${t("modelCatalogFail")}${catalog.error}`)

@@ -1,6 +1,6 @@
 {
   "name": "dsh-screenshot-classify",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Screenshot capture with automatic content classification for DeepSeek Harness: clipboard watcher + system floating window (comment / key-point / category picker) + zero-config OCR through the host's own multimodal model + automatic #category tagging + one-line summary for saved documents + Obsidian per-day merging + evening AI organization. 截图即存 · 自动分类:剪贴板监听 + 鼠标位置悬浮窗 + 用宿主大模型零配置识别 + 按内容自动打 #类目 标签 + 存文档时自动写一句摘要 + Obsidian 按天合并 + 晚间整理",
   "type": "module",
   "main": "index.mjs",

@@ -161,22 +161,33 @@ dsh plugin --profile desktop add ./dsh-screenshot-classify-0.4.0.tgz
 不带图的最小请求。结果写在按钮下面独立一行（绿色 `连通 · Nms` / 红色 `失败:…`），
 不会被 4 秒就消失的保存提示盖掉。
 
-**模型目录从哪来**：插件向宿主 llm 服务要 provider / model 列表，只读、不缓存。
+**刷新模型列表**：旁边那个按钮让各 provider 插件**去上游重拉**一遍自己的模型表，
+然后才重新读目录。为什么需要它 —— 宿主里的 `listModels()` 是各插件**启动时**拉下来
+缓存的：装了新适配器、上游下架/改名/新增了模型，不重开页面就永远看不到。
+
+刷新会顺带说清结果，例如「已刷新: 6 个 provider · 20 个模型 · workbuddy-global:HTTP 500」——
+某个 provider 去上游拉失败时，目录里它仍是旧表，不说明的话会以为刷新没生效。
+**刷新失败不清空已有列表**：留着旧的好过白板。
+
+**模型目录从哪来**：插件向宿主 llm 服务要 provider / model 列表，本插件自己不缓存 ——
+但宿主那边是各 provider 插件启动时拉下来的快照，想让它变新得点「刷新模型列表」。
 目录取不到时选择器是空的，分组下方会显示红字说明原因，其余设置照常可用。
 
 ---
 
 ## 只读端点
 
-设置页用两个 GET 端点（由宿主 `webServer` 服务注册；该服务不存在时这两个端点不注册，插件其余功能不受影响）：
+设置页用三个端点（由宿主 `webServer` 服务注册；该服务不存在时这三个端点不注册，插件其余功能不受影响）：
 
 | 端点 | 说明 |
 |---|---|
 | `GET /plugins/dsh-screenshot-classify/models` | 模型目录：`{ providers: [{ id, name, models: [{ id, name, supportsImage, imageUnknown, efforts, defaultEffort }] }] }` |
 | `GET /plugins/dsh-screenshot-classify/probe?provider=X&model=Y` | 连通性探针：`{ ok, ms, error? }` |
+| `POST /plugins/dsh-screenshot-classify/refresh` | 让各 provider 去上游重拉模型表，再回目录：`{ providers, refresh: { results, summary } }` |
 
-两个端点**恒回 HTTP 200**：服务异常 / 参数缺失都放在响应体的 `error` 字段里
-（只有一个例外：非 GET 请求回 405）。这样设置页永远拿得到 JSON，不会因为一次上游抖动
+三个端点**恒回 HTTP 200**：服务异常 / 参数缺失都放在响应体的 `error` 字段里
+（例外：前两个非 GET 回 405，`/refresh` 非 POST 回 405 —— 它有副作用，
+不该被浏览器预取或缓存的 GET 顺手触发）。这样设置页永远拿得到 JSON，不会因为一次上游抖动
 在控制台里刷一个 500。探针是一次真实的最小请求，点一次花一次调用。
 
 ---

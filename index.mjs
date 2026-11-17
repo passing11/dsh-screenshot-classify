@@ -619,7 +619,157 @@ export function apply(ctx, input = {}) {
       }
     };
 
-    // 两条路由各自显式 register(不抽 helper):路径字面量与 kind:"exact" 同行,
+    /**
+     * 「刷新模型列表」要真的去问上游,不是把手上这份再念一遍。
+     *
+     * 目录是各 provider 插件在**启动时**拉下来缓存的,所以宿主里装了新适配器、
+     * 或上游那边下架/改名/新增了模型,我们这边 `listModels()` 仍然念旧表 ——
+     * 设置页不重开就永远看不到。唯一能让它变新的办法是调那个 provider 插件
+     * 自己的 `models/refresh` 路由,让它去上游重拉并写回自己的设置。
+     *
+     * 抄 dsh-tes-config/index.mjs 的做法(它踩过这些坑):
+     *  · 目标表写死插件名与路径 —— 这些是各 provider 插件的公开路由,不是内部实现;
+     *  · 必须绝对 URL,宿主侧 fetch 是 Node 的,相对路径报 "Failed to parse URL";
+     *  · 限并发 2。全铺开等于同时向同一家上游打一串请求,撞上它的并发限流后
+     *    结论会变成「一堆失败」,而那是我自己压出来的假象;
+     *  · 单个 provider 失败不影响其它,结果逐条回给前端。
+     */
+    const REFRESH_TARGETS = [
+      {
+        plugin: "dsh-connect-workbuddy",
+        path: "/plugins/dsh-connect-workbuddy/models/refresh",
+        regions: ["cn", "global"],
+        providers: { cn: "workbuddy", global: "workbuddy-global" },
+      },
+      {
+        plugin: "dsh-connect-trae",
+        path: "/plugins/dsh-connect-trae/models/refresh",
+        regions: ["cn", "ai"],
+        providers: { cn: "trae", ai: "trae-global" },
+      },
+    ];
+
+    /** 单次刷新请求的超时。上游拉目录通常一两秒,30 秒是「这家不通」的判定线。 */
+    const REFRESH_TIMEOUT_MS = 30000;
+
+    /** 本站 origin。宿主侧 fetch 不认相对路径,调别的插件的路由必须拼绝对地址。 */
+    const originOf = (req) => {
+      try {
+        const ws = webCtx.webServer;
+        if (ws && typeof ws.getOrigin === "function") {
+          const o = ws.getOrigin();
+          if (typeof o === "string" && o.length > 0) return o.replace(/\/+$/, "");
+        }
+      } catch {
+        /* 拿不到就退回 Host 头 */
+      }
+      const hostHeader = req?.headers?.host;
+      if (!hostHeader) return null;
+      const proto = String(req?.headers?.["x-forwarded-proto"] || "").split(",")[0].trim() || "http";
+      return `${proto}://${hostHeader}`;
+    };
+
+    /** 限并发地跑一组 promise;顺序与输入一致。 */
+    const mapLimit = async (items, limit, run) => {
+      const out = new Array(items.length);
+      let next = 0;
+      const worker = async () => {
+        for (;;) {
+          const i = next++;
+          if (i >= items.length) return;
+          out[i] = await run(items[i], i);
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+      return out;
+    };
+
+    /** 让一个 provider 插件去上游重拉它的模型表。失败也返回结果对象,不抛。 */
+    const refreshOne = async (target, region, base) => {
+      const provider = target.providers[region];
+      if (!base) {
+        return { plugin: target.plugin, region, provider, status: "fail", ms: 0, reason: "拿不到本站 origin" };
+      }
+      const url = `${base}${target.path}?region=${encodeURIComponent(region)}`;
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), REFRESH_TIMEOUT_MS);
+      timer.unref?.();
+      const started = Date.now();
+      try {
+        const resp = await fetch(url, { method: "POST", headers: { accept: "application/json" }, signal: ac.signal });
+        const ms = Date.now() - started;
+        const text = await resp.text();
+        let body = null;
+        try {
+          body = text ? JSON.parse(text) : null;
+        } catch {
+          body = null;
+        }
+        if (!resp.ok) {
+          return {
+            plugin: target.plugin,
+            region,
+            provider,
+            status: "fail",
+            ms,
+            reason: (body && (body.error || body.message)) || `HTTP ${resp.status}`,
+          };
+        }
+        const models = Array.isArray(body?.models) ? body.models : [];
+        return {
+          plugin: target.plugin,
+          region,
+          provider,
+          status: models.length > 0 ? "ok" : "empty",
+          ms,
+          count: models.length,
+          reason: models.length === 0 ? "上游返回了 0 个模型" : undefined,
+        };
+      } catch (err) {
+        const aborted = err?.name === "AbortError";
+        return {
+          plugin: target.plugin,
+          region,
+          provider,
+          status: "fail",
+          ms: Date.now() - started,
+          reason: aborted ? `超过 ${REFRESH_TIMEOUT_MS / 1000} 秒没有响应` : String(err?.message ?? err),
+        };
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    /**
+     * 刷新全部目标,然后**重新读一遍目录**回给前端。
+     *
+     * 顺序是刻意的:先让各 provider 去上游重拉(它们会写回自己的设置),
+     * 再调 catalog() —— 那时 listModels() 才是新表。反过来做等于把旧表
+     * 再念一遍,用户点了刷新却什么都没变,还以为按钮坏了。
+     */
+    const refreshAll = async (base) => {
+      const jobs = [];
+      for (const target of REFRESH_TARGETS) {
+        for (const region of target.regions) jobs.push({ target, region });
+      }
+      const results = await mapLimit(jobs, 2, (j) => refreshOne(j.target, j.region, base));
+      const fresh = await catalog();
+      return {
+        ...fresh,
+        refresh: {
+          at: new Date().toISOString(),
+          results,
+          summary: {
+            total: results.length,
+            ok: results.filter((r) => r.status === "ok").length,
+            empty: results.filter((r) => r.status === "empty").length,
+            fail: results.filter((r) => r.status === "fail").length,
+          },
+        },
+      };
+    };
+
+    // 三条路由各自显式 register(不抽 helper):路径字面量与 kind:"exact" 同行,
     // 静态检查能直接看出注册了几个端点。
     const disposeModels = webCtx.effect(() => {
       const dispose = webCtx.webServer.register({
@@ -646,9 +796,28 @@ export function apply(ctx, input = {}) {
       return () => dispose();
     }, `[${name}] /plugins/dsh-screenshot-classify/probe`);
 
+    const disposeRefresh = webCtx.effect(() => {
+      const dispose = webCtx.webServer.register({
+        kind: "exact",
+        path: "/plugins/dsh-screenshot-classify/refresh",
+        handler: async (req, res) => {
+          // POST 而不是 GET:这个端点有副作用(会推动各 provider 去上游重拉并写回
+          // 自己的设置),不该被浏览器预取或缓存的 GET 顺手触发。
+          if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+          try {
+            json(res, 200, await refreshAll(originOf(req)));
+          } catch (err) {
+            json(res, 200, { providers: [], error: String(err?.message ?? err) });
+          }
+        },
+      });
+      return () => dispose();
+    }, `[${name}] /plugins/dsh-screenshot-classify/refresh`);
+
     return () => {
       disposeModels();
       disposeProbe();
+      disposeRefresh();
     };
   });
 
